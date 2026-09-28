@@ -380,6 +380,53 @@ def test_lookup_refuses_to_write_to_the_index(tmp_path):
     assert before == after
 
 
+def test_no_query_without_an_exact_match_ever_produces_an_anchor():
+    """The single most important property, swept over real index data.
+
+    Every string here either misses entirely or resolves only fuzzily. None of
+    them may yield an anchor, whatever difflib scores -- a near match is a
+    near match, and the user typed something else.
+    """
+    from normalize import fold
+    from lookup import lookup
+    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        typed = ["DOLIPRAN", "doliprna", "AUGMENTN", "POLARAMIN",
+                 "zzzznotadrug", "DOLIPRANEE", "DOLPRANE"]
+        for spelling in typed:
+            exact = con.execute(
+                "SELECT 1 FROM product WHERE brand_key=? LIMIT 1",
+                (fold(spelling),)).fetchone()
+            assert exact is None, f"{spelling!r} is an exact match; pick another"
+            res = lookup(name=spelling)
+            assert res.anchor is None, f"{spelling!r} produced an anchor"
+            assert res.status in ("ambiguous", "not_found")
+    finally:
+        con.close()
+
+
+def test_no_none_dose_row_ever_reaches_a_class_across_the_index():
+    """Swept, not spot-checked: every active row whose dose is undeterminable
+    is looked up as a brand, and no result may place a None-dose row in any
+    equivalence bucket."""
+    from lookup import lookup
+    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        brands = [r[0] for r in con.execute(
+            "SELECT DISTINCT brand_key FROM product "
+            "WHERE dose_key IS NULL AND availability='active'")]
+    finally:
+        con.close()
+    assert brands, "index no longer has unknown-dose active rows"
+    for brand_key in brands:
+        res = lookup(name=brand_key)
+        if not res.anchor:
+            continue
+        assert all(p.dose_key is not None for p in res.equivalents)
+        if res.anchor.dose_key is None:
+            assert res.equivalents == []
+
+
 # ---------------------------------------------------------------------------
 # CLI contract: flags, exit codes, and output a human reads.
 # ---------------------------------------------------------------------------
