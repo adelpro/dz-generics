@@ -4,15 +4,15 @@
     {
       "id": 1,
       "prompt": "Bonjour, je cherche les génériques du Doliprane 500 mg disponibles en Algérie. Quels laboratoires les fabriquent et où sont-ils produits ?",
-      "expected_output": "Identifies Doliprane's DCI as paracetamol, lists the Algerian-registered equivalents at the same form and 500 mg dosage with their laboratories and whether each is made in Algeria or imported, states the nomenclature version, separates any different-dosage paracetamol products as NOT equivalent, and closes with the pharmacist/prescriber note.",
+      "expected_output": "Identifies Doliprane's DCI as paracetamol, lists the Algerian-registered equivalents at the same form and dosage with their laboratories and whether each is made in Algeria or imported, states the nomenclature version, separates any different-dosage paracetamol products as NOT equivalent, and closes with the pharmacist/prescriber note.",
       "files": [],
       "expectations": [
         "The answer states which nomenclature version it is based on (Août 2026)",
         "The answer identifies the DCI for Doliprane as paracetamol (PARACETAMOL)",
-        "The answer lists at least two Algerian-registered products with the same DCI at the same 500 mg tablet dosage",
+        "The answer lists at least two Algerian-registered products with the same DCI at the same dosage as the anchor",
         "Each listed product names its laboratory",
         "The answer distinguishes products made in Algeria from imported ones",
-        "Any paracetamol product at a different dosage (for example 1000 mg or 1 g) is either omitted or explicitly marked as not equivalent",
+        "Any paracetamol product at a different dosage is either omitted or explicitly marked as not equivalent",
         "The answer does not claim the products are bioequivalent or therapeutically interchangeable",
         "The answer states that substitution is a decision for the pharmacist or prescriber"
       ]
@@ -20,7 +20,7 @@
     {
       "id": 2,
       "prompt": "أريد قائمة البدائل المتوفرة في الجزائر للباراسيتامول على شكل شراب، مع ذكر المختبرات المصنعة.",
-      "expected_output": "Resolves the Arabic DCI الباراسيتامول to PARACETAMOL, filters to the syrup/oral-solution form, lists the registered products with their laboratories, answers in Arabic, states the nomenclature version, and does not treat tablet products as equivalent to syrups.",
+      "expected_output": "Resolves the Arabic DCI الباراسيتامول to PARACETAMOL, filters to the oral liquid / syrup form, lists the registered products with their laboratories, answers in Arabic, states the nomenclature version, and does not treat tablet products as equivalent to syrups.",
       "files": [],
       "expectations": [
         "The answer is written in Arabic, matching the language of the question",
@@ -35,13 +35,27 @@
     {
       "id": 3,
       "prompt": "Peux-tu me donner les génériques algériens du Tylenol 500 mg ?",
-      "expected_output": "States that Tylenol itself is not in the Algerian nomenclature, rather than inventing Algerian generics for it. May note that Tylenol's active substance is paracetamol and offer to look that up by DCI, but must not silently substitute paracetamol products as 'Tylenol generics'.",
+      "expected_output": "States that Tylenol IS in the Algerian nomenclature but only as off-market (not renewed / withdrawn), so it must not be presented as available. Must not present Algerian paracetamol products as 'generics of Tylenol' as though Tylenol were obtainable. May offer the paracetamol DCI route while keeping the distinction clear.",
       "files": [],
       "expectations": [
-        "The answer states that Tylenol is not itself listed in the Algerian nomenclature",
-        "The answer does NOT present Algerian paracetamol products as 'generic equivalents of Tylenol' without flagging the distinction",
+        "The answer states that Tylenol is present in the Algerian nomenclature",
+        "The answer states that Tylenol is off-market (not renewed or withdrawn) and must not be presented as available",
+        "The answer does NOT present Algerian paracetamol products as obtainable 'generic equivalents of Tylenol' without flagging that Tylenol itself is off-market",
         "The answer does NOT invent or guess a registered Algerian product, laboratory, or registration number",
-        "If the answer mentions paracetamol, it does so as the active substance and makes clear that the Algerian registry lists products by DCI, not by the American brand name",
+        "If the answer mentions paracetamol, it does so as the active substance and makes clear that the registry lists products by DCI, not by the American brand name",
+        "The answer does not present an unverified product as available in Algeria"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Is Nurofen available in Algeria? What are the alternatives there?",
+      "expected_output": "States plainly that nothing in the Algerian nomenclature matches Nurofen, rather than mapping it to Algerian ibuprofen products as though those were Nurofen's generics. May note Nurofen's active substance is ibuprofen and offer to look that up by DCI, but must not silently substitute ibuprofen products as 'Nurofen generics'.",
+      "files": [],
+      "expectations": [
+        "The answer states that nothing in the nomenclature matches Nurofen",
+        "The answer does NOT present Algerian ibuprofen products as 'generic equivalents of Nurofen' without flagging the distinction",
+        "The answer does NOT invent or guess a registered Algerian product, laboratory, or registration number",
+        "If the answer mentions ibuprofen, it does so as the active substance and makes clear that the Algerian registry lists products by DCI, not by a foreign brand name",
         "The answer does not present an unverified product as available in Algeria"
       ]
     }
