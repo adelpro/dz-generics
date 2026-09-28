@@ -669,6 +669,41 @@ def test_different_dosage_is_not_an_equivalent():
     assert all(p.dose_key != res.anchor.dose_key for p in res.other_dosages)
 
 
+def test_anchor_has_a_known_dose_even_when_the_query_is_a_dci():
+    """PARACETAMOL covers 89 active rows over 28 form/dose pairs, 7 of them
+    with no determinable dose. Sorting None first would anchor on an unknown
+    dose, so the rule must require one."""
+    from lookup import lookup
+    res = lookup(dci="PARACETAMOL")
+    assert res.status == "found"
+    assert res.anchor.dose_key is not None
+    assert res.anchor.availability == "active"
+
+
+def test_an_unknown_dose_never_lands_in_equivalents():
+    """None means unknown dose, never an equal one. Grouping by a shared None
+    reports seven unrelated oral solutions as interchangeable."""
+    from lookup import lookup
+    for query in ({"dci": "PARACETAMOL"}, {"name": "doliprane"}):
+        res = lookup(**query)
+        assert all(p.dose_key is not None for p in res.equivalents)
+        assert all(p.dose_key is not None for p in res.other_dosages)
+
+
+def test_a_blank_dci_base_key_does_not_fuse_unrelated_molecules():
+    """Three rows have a blank dci_base_key and are unrelated molecules:
+    KINADYN MG (magnesium carbonate), MAGNESIUM SULFATE, and ISOCLOPRAMID
+    (metoclopramide). Grouping on '' would report metoclopramide as an
+    equivalent of magnesium."""
+    from lookup import lookup
+    res = lookup(name="ISOCLOPRAMID")
+    brands = {p.brand_key for p in res.equivalents} | {
+        p.brand_key for p in res.other_forms} | {
+        p.brand_key for p in res.other_dosages}
+    assert "KINADYN MG" not in brands
+    assert "MAGNESIUM SULFATE" not in brands
+
+
 def test_unknown_name_returns_no_match_not_a_guess():
     from lookup import lookup
     res = lookup(name="zzzznotadrug")
@@ -721,21 +756,38 @@ source file misspells the same substance several ways, so a miss must report
 `not_found` rather than widen the net.
 
 Pick the **anchor**. A brand is not one product — `DOLIPRANE` is twelve rows
-across tablets, suppositories and sachets — so the rule has to be pinned or
-the answer is arbitrary. Verified against the index:
+across tablets, suppositories and sachets, and a single DCI is worse: the
+`PARACETAMOL` base key covers **192 rows, 89 of them active, across 28
+distinct form/dose pairs** — so the rule has to be pinned or the answer is
+arbitrary. Verified against the index:
 
 1. Consider the rows the query matched.
-2. Prefer rows with `availability = 'active'`. If none are active, use all of
-   them — the anchor is then itself off-market and must be flagged as such.
+2. Prefer rows with `availability = 'active'` **and a non-null `dose_key`**.
 3. Among those, take the row whose `(dose_key, form_key)` sorts first
    lexicographically. This is arbitrary but deterministic, which is what a
    test needs; every alternative lands in the other buckets anyway.
+4. Only if no row satisfies step 2 do you fall back — first to any active row,
+   then to any row at all. In those cases the anchor's dose or availability is
+   itself part of the answer and must be flagged rather than glossed.
 
-For `DOLIPRANE` that yields the `COMPRIME` / `1000MG` tablet, whose raw form in
-the file is the misspelling `COMRPIME` — a useful confirmation that `form_key`
-canonicalization is on the path. Its `equivalents` are the **7** active
-paracetamol 1000 mg tablets: `ANTALGAN`, `DOLI-BIEN`, `DOLIPRANE`, `DOLYC`,
-`EXPANDOL`, `PARACETAMOL PHYSIOPHARM`, `ROSADOL`.
+**Step 2's `dose_key` requirement is load-bearing, not cosmetic.**
+`dose_key` is `None` for 810 rows, and 7 of the active `PARACETAMOL` rows have
+no determinable dose. Without the requirement, `None` sorts to the front and
+the anchor becomes a `SOLUTION_BUVABLE` whose dose is unknown — and then
+`equivalents` groups **seven different products by their shared unknown dose**,
+which is precisely the error this whole layer exists to prevent. `None` means
+*unknown*, never *equal*.
+
+Consequently: **if the anchor's `dose_key` is `None`, `equivalents` is empty.**
+Equivalence is undefined without a dosage, so those rows go to `other_forms`
+or `inactive` and the answer says the dose is not comparable. A test must pin
+this, because the failure mode is silent and reads as a confident answer.
+
+For `DOLIPRANE` the rule yields the `COMPRIME` / `1000MG` tablet, whose raw
+form in the file is the misspelling `COMRPIME` — a useful confirmation that
+`form_key` canonicalization is on the path. Its `equivalents` are the **7**
+active paracetamol 1000 mg tablets: `ANTALGAN`, `DOLI-BIEN`, `DOLIPRANE`,
+`DOLYC`, `EXPANDOL`, `PARACETAMOL PHYSIOPHARM`, `ROSADOL`.
 
 Then group every product sharing the anchor's `dci_base_key` into four buckets
 by `(form_key, dose_key)` and `availability`: `equivalents` (same form, same
@@ -743,6 +795,14 @@ dose, `active`), `other_dosages`, `other_forms`, and `inactive` (everything
 whose `availability` is not `active`). `--include-inactive` folds `inactive`
 back into `equivalents` for the rare user who wants the full historical
 picture, and says so in the output.
+
+**A blank `dci_base_key` is not a class.** Three rows in the index have one —
+`KINADYN MG` (magnesium carbonate), `MAGNESIUM SULFATE` and `ISOCLOPRAMID`
+(metoclopramide) — and they are unrelated molecules. Grouping by an empty
+string fuses them into one equivalence class, which is a critical bug: it would
+report metoclopramide as an equivalent of magnesium. Rows with a blank
+`dci_base_key` match only by exact `brand_key` or `code`, never by DCI
+grouping, and never against each other.
 
 **The anchor itself may be off-market.** `POLARAMINE` is in **both** the
 not-renewed and the withdrawn lists — 4 rows, 1 and 3 — and has **no active
@@ -771,7 +831,7 @@ days, print a staleness warning. Use compact aligned text by default and
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_lookup.py -v`
-Expected: 6 passed
+Expected: 9 passed
 
 - [ ] **Step 5: Manual spot-check against names a pharmacist would recognize**
 
@@ -787,8 +847,8 @@ Expected, against the verified data:
 | command | what to verify |
 |---|---|
 | `--name "DOLIPRANE"` | anchor is the `COMPRIME` 1000 mg tablet (`COMRPIME` in the file, canonicalized); **7** active equivalents listed with laboratories, all `made in Algeria` (`F`) |
-| `--dci "PARACETAMOL"` | the same anchor by the DCI route, and that `other_dosages` / `other_forms` separate 500 mg tablets, effervescent and orodispersible forms rather than merging them |
-| `--name "Augmentin"` | resolves to the active `RE` sachet 1000MG/125MG, with **7 `GE` copies** alongside — 6 made locally and `AMOXICILLINE/ACIDE CLAVULANIQUE SANDOZ ADULTE` imported (`I`) |
+| `--dci "PARACETAMOL"` | the DCI route resolves to a *different* anchor than the brand route — the `PARACETAMOL` base key is 192 rows over 28 form/dose pairs, so the rule picks its own. Verify the anchor is **active and has a known dose**, that `other_dosages` / `other_forms` separate 500 mg tablets, effervescent and orodispersible forms rather than merging them, and that **no product with an unknown dose appears in `equivalents`** |
+| `--name "Augmentin"` | resolves to the active `RE` sachet 1000MG/125MG, with **5 active `GE` copies** alongside, all made locally. `AMOXICILLINE/ACIDE CLAVULANIQUE SANDOZ ADULTE` and `CLAVOR` are `GE` but **not active**, so they must appear as off-market, not as obtainable equivalents |
 | `--name "Polaramine"` | resolves although it is on no active list; leads with its off-market status and carries a withdrawal reason; must present nothing as available |
 | `--name "dolipran"` | `ambiguous` with DOLIPRANE as a candidate, **not** silently resolved |
 | `--name "zzzznotadrug"` | exits 1 with a clear message, no guess |
