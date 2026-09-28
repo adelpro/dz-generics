@@ -924,17 +924,20 @@ Public repo `adelpro/dz-generics`, MIT licensed.
 
 **Redistribution line, and it is a real one:** the derived SQLite index ships, the ministry's `.xlsx` does not. The index is a factual list of registrations — names, forms, dosages, labs — published by a government ministry as public information. The `.xlsx` is the ministry's own document. Committing a 1.2 MB government file into a public repo invites a takedown and gives you nothing, because `fetch_source.py` can fetch it in one request. So `data/source/` is gitignored, and the README states plainly that the source file is not redistributed and must be downloaded from the ministry.
 
-- [ ] **Step 1: Write `scripts/fetch_source.py`** — fetch the ministry page, regex the first `.xlsx` URL whose anchor text matches `Version`, download to `data/source/`. Print the URL and the byte count. Keep it out of the query path entirely; the filename pattern is inconsistent and this will break at some point. When it does, the manual download still works, so a failure here must never block a lookup.
+- [x] **Step 1: Write `scripts/fetch_source.py`** — DONE (commit `a527c8a`,
+  parser corrected in `8dea90a`). It reads the anchor text rather than the
+  filename, which is what lets it survive the ministry's inconsistent naming
+  (`clean_` prefix, hyphens vs dots, `NOMENCLATURE` vs `version`). Verified
+  against the live page: 13 releases, newest first, withdrawal lists excluded.
 
-- [ ] **Step 2: Test the fetcher against the live site**
+- [x] **Step 2: Test the fetcher against the live site** — DONE. Dry run
+  selects `08/2026` and the exact URL; 7 offline tests in
+  `tests/test_fetch_source.py` cover the parser.
 
-```bash
-python dz-generics/scripts/fetch_source.py
-```
-
-Expected: downloads a file whose size is within 10% of the known 1,252,820 bytes. A much smaller file means the regex grabbed the wrong link.
-
-- [ ] **Step 3: Write `.gitignore`** with `data/source/`, `__pycache__/`, `*.pyc`, and `dz-generics-workspace/`.
+- [x] **Step 3: Write `.gitignore`** — DONE at setup, before the first commit,
+  so the ministry `.xlsx` was never staged. Covers `data/source/`,
+  `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.superpowers/` and
+  `dz-generics-workspace/`.
 
 - [ ] **Step 4: Write the README** — what it does, one worked example, the install line, how to refresh, and an explicit data-provenance section: source URL, version label, build date, the statement that the ministry file is not redistributed, and a line that this is a lookup aid and not a source of prescribing advice.
 
@@ -954,10 +957,20 @@ gh repo create adelpro/dz-generics --public --description "Find generic equivale
 
 ---
 
-## Open Decisions
+## Decisions (resolved)
 
-Three choices the plan pins a default for. Each is one word from you to change.
-
-1. **Answer language** — default is to mirror the user's language. If you would rather always get French, that is a one-line change in `SKILL.md`.
-2. **Publish scope** — default is your private `my-opencode-config` repo only. Making it public means the bundled 1.2 MB source file and the index go public; that is fine, but the ministry's terms on redistribution are worth a look first.
-3. **Withdrawn handling** — default excludes withdrawn products from the equivalents list entirely and mentions them in a footnote. If you would rather see them inline marked struck-through, that changes `lookup.py` and the tests.
+1. **Answer language** — mirror the user's language. French query, French
+   answer; Arabic query, Arabic answer; English, English. Drug names stay in
+   the nomenclature's own French/Latin form, since that is what is printed on
+   the box in Algeria and what a pharmacist will read.
+2. **Publish scope** — **public repo, `adelpro/dz-generics`, MIT.** Checked:
+   there is no open-data licence on the ministry's nomenclature, but it is
+   published unauthenticated and the ministry solicits corrections to it. The
+   derived index ships with attribution; the ministry's `.xlsx` does not
+   (see the redistribution note above).
+3. **Withdrawn handling** — excluded from `equivalents` and surfaced in a
+   separate off-market list, never inline struck-through. A withdrawn product
+   is a safety fact, not a formatting choice; it must be visible as its own
+   category so a reader cannot mistake it for an option.
+4. **Anchor language and identity** — the answer names the substance by its
+   DCI, which is how the registry lists it, not by the queried brand.
