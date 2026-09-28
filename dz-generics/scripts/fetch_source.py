@@ -46,8 +46,10 @@ MONTHS = {
 
 # Anchor text like "Version Août 2026" or "Version Février 2026".
 VERSION_RE = re.compile(r"version\s+([a-z]+)\s+(\d{4})", re.IGNORECASE)
-# Any .xlsx link. Hrefs may be absolute or protocol-relative.
-XLSX_RE = re.compile(r'href=["\']([^"\']+\.xlsx)["\']', re.IGNORECASE)
+# One anchor, capturing href and inner text.
+ANCHOR_RE = re.compile(
+    r"<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL
+)
 
 
 def fold(text: str) -> str:
@@ -66,28 +68,29 @@ def fetch_page(url: str = PAGE_URL, timeout: int = 30) -> str:
 def parse_versions(page: str, base_url: str = PAGE_URL) -> list[tuple[tuple[int, int], str]]:
     """Return ``[((year, month), url), ...]`` sorted newest first.
 
-    Pairs each .xlsx link with the nearest preceding version anchor text. Rows
-    whose text does not parse as a version, and non-release spreadsheets such
-    as the withdrawal lists, are skipped rather than guessed at.
+    A release is an anchor whose ``href`` ends in ``.xlsx`` **and** whose own
+    text parses as a version. Requiring both on the same anchor is what keeps
+    the non-renewed and withdrawal spreadsheets out: their links sit under the
+    same heading but their text is not a version, so they are skipped rather
+    than inheriting whichever version happened to precede them.
     """
-    found: list[tuple[tuple[int, int], str]] = []
-    # Walk anchor tags, keeping the most recent version text seen so an .xlsx
-    # link can inherit it -- the page nests the text and the href separately.
-    pending: tuple[int, int] | None = None
-    for match in re.finditer(r"<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", page, re.I | re.S):
-        href, text = match.group(1), html.unescape(re.sub(r"<[^>]+>", "", match.group(2)))
+    found: dict[tuple[int, int], str] = {}
+    for match in ANCHOR_RE.finditer(page):
+        href = match.group(1)
+        if not href.lower().endswith(".xlsx"):
+            continue
+        text = html.unescape(re.sub(r"<[^>]+>", "", match.group(2)))
         version = VERSION_RE.search(fold(text))
-        if version:
-            month = MONTHS.get(version.group(1))
-            if month:
-                pending = (int(version.group(2)), month)
-        if href.lower().endswith(".xlsx") and pending is not None:
-            found.append((pending, urllib.parse.urljoin(base_url, href)))
-    # De-duplicate, keeping the first URL seen for a given version.
-    unique: dict[tuple[int, int], str] = {}
-    for version, url in found:
-        unique.setdefault(version, url)
-    return sorted(unique.items(), reverse=True)
+        if not version:
+            continue
+        month = MONTHS.get(version.group(1))
+        if not month:
+            continue
+        # setdefault, so a duplicated version keeps the first URL seen.
+        found.setdefault(
+            (int(version.group(2)), month), urllib.parse.urljoin(base_url, href)
+        )
+    return sorted(found.items(), reverse=True)
 
 
 def main(argv: list[str] | None = None) -> int:
