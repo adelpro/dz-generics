@@ -631,9 +631,10 @@ git commit -m "feat: build SQLite index from ministry nomenclature"
   - `LookupResult` — a dataclass with fields `query: str`, `status: str`
     (one of `"found"`, `"ambiguous"`, `"not_found"`), `dci_base_key: str | None`,
     `anchor: Product | None`, `candidates: list[Product]`, `version_label: str`,
-    and four **properties**: `equivalents`, `other_dosages`, `other_forms`,
-    `inactive`. Properties, not methods — the anchor is already on the result,
-    so passing it back in is redundant.
+    `anchor_rule: str` (which branch of the anchor rule fired), and five
+    **properties**: `equivalents`, `other_dosages`, `unknown_dose`,
+    `other_forms`, `inactive`. Properties, not methods — the anchor is already
+    on the result, so passing it back in is redundant.
   - `Product` — a dataclass mirroring one `product` row, exposing `brand`,
     `dci`, `form`, `form_key`, `dosage`, `dose_key`, `lab`, `country`,
     `type`, `availability`.
@@ -789,12 +790,29 @@ form in the file is the misspelling `COMRPIME` — a useful confirmation that
 active paracetamol 1000 mg tablets: `ANTALGAN`, `DOLI-BIEN`, `DOLIPRANE`,
 `DOLYC`, `EXPANDOL`, `PARACETAMOL PHYSIOPHARM`, `ROSADOL`.
 
-Then group every product sharing the anchor's `dci_base_key` into four buckets
-by `(form_key, dose_key)` and `availability`: `equivalents` (same form, same
-dose, `active`), `other_dosages`, `other_forms`, and `inactive` (everything
-whose `availability` is not `active`). `--include-inactive` folds `inactive`
-back into `equivalents` for the rare user who wants the full historical
-picture, and says so in the output.
+Then group every product sharing the anchor's `dci_base_key` into five buckets
+by `(form_key, dose_key)` and `availability`:
+
+| bucket | contents | rendered as |
+|---|---|---|
+| `equivalents` | same form, same dose, `active` | the answer |
+| `other_dosages` | same form, a **different known** dose, `active` | not equivalent — different strength |
+| `unknown_dose` | same form, `dose_key IS NULL`, `active` | dosage not comparable — **not** evidence of a difference |
+| `other_forms` | a different `form_key` | not equivalent — different form |
+| `inactive` | any `availability` other than `active` | off-market |
+
+`--include-inactive` folds `inactive` back into `equivalents` for the rare user
+who wants the full historical picture, and says so in the output.
+
+**`unknown_dose` is a separate bucket for a reason.** An earlier draft put
+these rows in `other_dosages`, which renders as "different dose — NOT
+equivalent". That asserts a dosage difference the data does not support: the
+dose is *unknown*, not *different*. It affects 776 of 6568 brands (about 12%)
+— for example `ACICLOSINA` is a `POMMADE_OPHTALMIQUE` at 3%, and four
+same-form rows with no determinable dose would be listed as different
+strengths. The error is on the safe side (it under-claims rather than
+fabricating an equivalence) but it is still a false statement about a
+medicine. `None` means unknown, and unknown is its own category.
 
 **A blank `dci_base_key` is not a class.** Three rows in the index have one —
 `KINADYN MG` (magnesium carbonate), `MAGNESIUM SULFATE` and `ISOCLOPRAMID`
