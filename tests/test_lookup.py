@@ -535,6 +535,120 @@ def test_an_unknown_dose_is_not_reported_as_a_different_strength():
     assert "different dose" not in block.lower()
 
 
+# ---------------------------------------------------------------------------
+# Finding 1: every off-market line in every bucket must carry its status.
+# ---------------------------------------------------------------------------
+
+# The exact wording the ``inactive`` section already emits.
+_AVAILABILITY_MARKERS = {
+    "not_renewed": "[not renewed]",
+    "withdrawn": "[withdrawn]",
+}
+
+# The five rendered sections, in output order, mapped to their result bucket.
+# (heading snippet, bucket attribute, per-section cap or None for no cap)
+_SECTIONS = (
+    ("EQUIVALENTS --", "equivalents", None),
+    ("Other dosages --", "other_dosages", 20),
+    ("Unknown dose --", "unknown_dose", 20),
+    ("Other forms --", "other_forms", 20),
+    ("Off-market at the anchor's form and dose", "inactive", None),
+)
+
+
+def _section_blocks(text):
+    """Split rendered text into the five sections, in order.
+
+    Each block is everything after its heading up to the next heading, so the
+    product lines it holds belong to exactly one bucket. The off-market heading
+    is conditional -- it only appears when the bucket holds rows -- so a missing
+    heading yields an empty block rather than an error.
+    """
+    positions = []
+    cursor = 0
+    for heading, _attr, _cap in _SECTIONS:
+        found = text.find(heading, cursor)
+        if found == -1:
+            # Only the off-market heading may legitimately be absent.
+            assert heading == _SECTIONS[-1][0], f"missing heading: {heading!r}"
+            found = len(text)
+        positions.append(found)
+        cursor = found + 1
+    blocks = []
+    for i, start in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(text)
+        blocks.append(text[start:end])
+    return blocks
+
+
+def _product_lines(block):
+    """The ``  1. BRAND -- dose ...`` first-lines of a rendered block."""
+    import re
+    return [line for line in block.splitlines()
+            if re.match(r"^\s*\d+\. ", line)]
+
+
+def _assert_sections_mark_off_market(result):
+    from lookup import render_text
+    text = render_text(result)
+    blocks = _section_blocks(text)
+    assert len(blocks) == len(_SECTIONS)
+    for (heading, attr, cap), block in zip(_SECTIONS, blocks):
+        bucket = getattr(result, attr)
+        lines = _product_lines(block)
+        expected = bucket if cap is None else bucket[:cap]
+        assert len(lines) == len(expected), (
+            f"{heading!r}: rendered {len(lines)} lines for {len(expected)} rows")
+        if cap is not None and len(bucket) > cap:
+            assert "more" in block, f"{heading!r}: truncation note missing"
+        for product, line in zip(expected, lines):
+            assert product.brand in line, f"{heading!r}: {product.brand} not in {line!r}"
+            dose = product.dose_key or "dose unknown"
+            assert dose in line, f"{heading!r}: {dose} not in {line!r}"
+            marker = _AVAILABILITY_MARKERS.get(product.availability)
+            if marker is None:
+                # Active rows must stay unmarked: the absence of a marker is
+                # what tells a reader the row is current.
+                assert "[withdrawn]" not in line and "[not renewed]" not in line, (
+                    f"{heading!r}: active row got a marker: {line!r}")
+            else:
+                assert marker in line, (
+                    f"{heading!r}: off-market row {product.brand} "
+                    f"({product.availability}) rendered without {marker}: {line!r}")
+
+
+def test_every_off_market_row_in_every_bucket_carries_its_marker():
+    """The safety defect: ``other_dosages``, ``unknown_dose`` and
+    ``other_forms`` used to render off-market rows exactly like current ones,
+    so a withdrawn product read as part of the current register.
+
+    DOLIPRANE holds 25 off-market rows in ``other_dosages`` and 76 in
+    ``other_forms``; the test walks all five sections and checks each rendered
+    line against the row's own availability, both directions: a non-active row
+    must show its marker, and an active row must not.
+    """
+    from lookup import lookup
+    res = lookup(name="DOLIPRANE")
+    assert res.status == "found"
+    _assert_sections_mark_off_market(res)
+    # The defect was real here, not hypothetical.
+    assert any(p.availability != "active" for p in res.other_dosages)
+    assert any(p.availability != "active" for p in res.other_forms)
+
+
+def test_every_off_market_row_in_every_bucket_carries_its_marker_across_brands():
+    """Swept over brands the findings name: ACICLOSINA's ``other_forms`` and
+    ``unknown_dose`` both hold off-market rows, and a widened lookup puts
+    off-market rows into ``equivalents`` too -- the marker must follow them
+    there, where the old code was silent."""
+    from lookup import lookup
+    for query in ({"name": "ACICLOSINA"}, {"name": "DOLIPRANE"},
+                  {"name": "DOLIPRANE", "include_inactive": True}):
+        res = lookup(**query)
+        assert res.status == "found", query
+        _assert_sections_mark_off_market(res)
+
+
 def test_the_staleness_boundary_is_pinned():
     """90 days is the line: at exactly 90 the index is still trusted, at 91 it
     warns. An empty or unparseable build date warns rather than pretending the

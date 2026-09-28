@@ -533,23 +533,36 @@ def _product_line(index: int, product: Product, *, tag: str = "") -> list[str]:
     return [first, second]
 
 
+def _availability_tag(product: Product) -> str:
+    """The marker an off-market row carries, and nothing for an active one.
+
+    Every bucket uses this. A withdrawn or not-renewed product rendered without
+    its status reads as part of the current register -- the exact mistake this
+    project exists to prevent -- so the marker is not a formatting choice made
+    per section: it is applied wherever a non-active row can appear, including
+    ``equivalents`` when ``--include-inactive`` folds those rows in.
+    """
+    if product.availability == "active":
+        return ""
+    return f"  [{availability_label(product.availability)}]"
+
+
 def _render_bucket(products: list[Product], empty_note: str,
-                   limit: int | None = None, tag=None) -> list[str]:
+                   limit: int | None = None) -> list[str]:
     """Render a bucket, truncating to ``limit`` items when given.
 
     ``limit`` exists because a DCI can reach hundreds of rows across the whole
     substance group; a terminal answer has to stay readable, and ``--json`` is
-    the route to the complete list. ``tag`` is an optional callable returning a
-    per-row suffix (used to mark off-market rows) so a bucket that can hold
-    more than one availability stays honest.
+    the route to the complete list. Each row carries its availability through
+    ``_availability_tag``, because any bucket may hold more than one
+    availability and a mixed list without markers is unreadable as a register.
     """
     if not products:
         return [f"  {empty_note}"]
     shown = products if limit is None else products[:limit]
     lines: list[str] = []
     for i, product in enumerate(shown, 1):
-        lines.extend(_product_line(i, product,
-                                   tag=tag(product) if tag else ""))
+        lines.extend(_product_line(i, product, tag=_availability_tag(product)))
     if limit is not None and len(products) > limit:
         lines.append(f"  ... and {len(products) - limit} more "
                      f"(use --json for the full list).")
@@ -659,10 +672,7 @@ def render_text(result: LookupResult) -> str:
     lines.append("Unknown dose -- same DCI and form, dose not comparable "
                  "(NOT evidence of a difference):")
     lines.append("")
-    lines.extend(_render_bucket(
-        result.unknown_dose, "none.", limit=20,
-        tag=lambda p: "" if p.availability == "active"
-        else f"  [{availability_label(p.availability)}]"))
+    lines.extend(_render_bucket(result.unknown_dose, "none.", limit=20))
 
     lines.append("")
     lines.append("Other forms -- same DCI, different form "
@@ -676,14 +686,13 @@ def render_text(result: LookupResult) -> str:
                      "(NOT active -- do not present as available):")
         lines.append("")
         for i, product in enumerate(result.inactive, 1):
-            lines.extend(_product_line(
-                i, product,
-                tag=f"  [{availability_label(product.availability)}]"))
+            lines.extend(_product_line(i, product,
+                                       tag=_availability_tag(product)))
     elif result.include_inactive and result.equivalents:
         lines.append("")
-        lines.append("--include-inactive: the off-market rows at this form "
-                     "and dose are folded into the list above; they are NOT "
-                     "all active.")
+        lines.append("--include-inactive: the once off-market rows at this form "
+                     "and dose are folded into the list above; every row that "
+                     "is not active there still carries its own marker.")
 
     if any(p.type == "BIO" for p in result.equivalents):
         lines.append("")
