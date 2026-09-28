@@ -49,6 +49,54 @@ def test_different_dosage_is_not_an_equivalent():
     assert all(p.dose_key != res.anchor.dose_key for p in res.other_dosages)
 
 
+def test_anchor_has_a_known_dose_even_when_the_query_is_a_dci():
+    """PARACETAMOL covers 89 active rows over 28 form/dose pairs, 7 of them
+    with no determinable dose. Sorting None first would anchor on an unknown
+    dose, so the rule must require one."""
+    from lookup import lookup
+    res = lookup(dci="PARACETAMOL")
+    assert res.status == "found"
+    assert res.anchor.dose_key is not None
+    assert res.anchor.availability == "active"
+
+
+def test_an_unknown_dose_never_lands_in_equivalents():
+    """None means unknown dose, never an equal one. Grouping by a shared None
+    reports seven unrelated oral solutions as interchangeable."""
+    from lookup import lookup
+    for query in ({"dci": "PARACETAMOL"}, {"name": "doliprane"}):
+        res = lookup(**query)
+        assert all(p.dose_key is not None for p in res.equivalents)
+        assert all(p.dose_key is not None for p in res.other_dosages)
+
+
+def test_a_fallback_anchor_is_flagged_and_forms_no_class():
+    """ACETADOL is the active PARACETAMOL row with no determinable dose, so the
+    rule falls back to it -- but the fallback is part of the answer. The dose
+    is unknown, so it is *not comparable*: no equivalence class may form, and
+    the text must say so rather than group seven unrelated oral solutions."""
+    from lookup import lookup, render_text
+    res = lookup(name="ACETADOL")
+    assert res.status == "found"
+    assert res.anchor.dose_key is None
+    assert res.anchor.availability == "active"
+    assert res.anchor_rule == "active_unknown_dose"
+    assert res.equivalents == []
+    assert "not comparable" in render_text(res).lower()
+
+
+def test_an_off_market_anchor_is_flagged_as_a_fallback():
+    """ISOCLOPRAMID has no active row at all (one blank-base withdrawn row), so
+    the rule falls back to an off-market anchor; the answer must lead with
+    that, and form no class."""
+    from lookup import lookup
+    res = lookup(name="ISOCLOPRAMID")
+    assert res.status == "found"
+    assert res.anchor.availability != "active"
+    assert res.anchor_rule == "off_market"
+    assert res.equivalents == []
+
+
 def test_unknown_name_returns_no_match_not_a_guess():
     from lookup import lookup
     res = lookup(name="zzzznotadrug")
@@ -140,6 +188,20 @@ def test_include_inactive_folds_the_inactive_bucket_back_in():
         "active", "not_renewed"}
     # Without the flag nothing off-market leaks in.
     assert all(p.availability == "active" for p in default.equivalents)
+
+
+def test_include_inactive_cannot_smuggle_an_unknown_dose_into_equivalents():
+    """`--include-inactive` folds off-market rows in, but only rows already at
+    the anchor's *known* form and dose. It must not become a back door for a
+    shared unknown dose: when the anchor's own dose is None the class stays
+    empty, and no row in a widened class may have a null dose."""
+    from lookup import lookup
+    for query in ({"name": "doliprane"}, {"name": "ACETADOL"},
+                  {"dci": "PARACETAMOL"}):
+        res = lookup(include_inactive=True, **query)
+        assert all(p.dose_key is not None for p in res.equivalents)
+        if res.anchor.dose_key is None:
+            assert res.equivalents == []
 
 
 def test_the_seven_verified_equivalents_are_exactly_these():
@@ -246,11 +308,12 @@ def test_one_row_matched_is_not_reported_as_several():
     assert len(res.anchor_rows) == 1
 
 
-def test_an_empty_dci_base_key_defines_no_class():
-    """Three rows carry an EMPTY `dci_base_key`. An empty key must not group
-    them: querying KINADYN MG would otherwise marry a magnesium salt, a
-    magnesium sulfate and a metoclopramide into one 'equivalence class' --
-    the exact wrong-marriage this layer exists to prevent."""
+def test_a_blank_dci_base_key_does_not_fuse_unrelated_molecules():
+    """Three rows carry a blank `dci_base_key` and are unrelated molecules:
+    KINADYN MG (magnesium carbonate), MAGNESIUM SULFATE, and ISOCLOPRAMID
+    (metoclopramide). Grouping on '' would report metoclopramide as an
+    equivalent of magnesium -- the exact wrong-marriage this layer exists to
+    prevent. A blank key defines no class, so each such row stands alone."""
     from lookup import lookup
     res = lookup(name="KINADYN MG")
     assert res.status == "found"
@@ -259,6 +322,17 @@ def test_an_empty_dci_base_key_defines_no_class():
     assert res.other_dosages == []
     assert res.other_forms == []
     assert res.inactive == []
+
+    # The other direction: querying ISOCLOPRAMID must not pull in the
+    # magnesium rows through the shared empty key.
+    res = lookup(name="ISOCLOPRAMID")
+    assert res.status == "found"
+    assert res.anchor.dci_base_key == ""
+    brands = ({p.brand_key for p in res.equivalents}
+              | {p.brand_key for p in res.other_forms}
+              | {p.brand_key for p in res.other_dosages})
+    assert "KINADYN MG" not in brands
+    assert "MAGNESIUM SULFATE" not in brands
 
 
 def test_a_brand_spanning_several_dci_bases_buckets_only_its_own():
@@ -290,7 +364,7 @@ def test_code_route_resolves_a_registration_code():
     lowest `(dose_key, form_key)` among the active rows, which here is
     DOLI-BIEN -- so the code route reaches the right *tablet* class but not
     the DOLIPRANE brand. Recorded rather than papered over; see
-    `test_dci_route_anchors_a_deterministic_row_not_the_doliprane_tablet`."""
+    `test_dci_route_anchors_an_active_known_dose_not_the_doliprane_brand`."""
     from lookup import lookup
     res = lookup(code="03 B 081")
     assert res.status == "found"
@@ -304,8 +378,8 @@ def test_code_route_resolves_a_registration_code():
 def test_dci_route_is_case_and_punctuation_insensitive():
     """`--dci` folds the same way `--name` does. PARACETAMOL has one base key
     here, so the route is unambiguous in *key* terms -- what it is not is a
-    brand, which is the conflict recorded in
-    `test_dci_route_anchors_a_deterministic_row_not_the_doliprane_tablet`."""
+    brand, which is the distinction recorded in
+    `test_dci_route_anchors_an_active_known_dose_not_the_doliprane_brand`."""
     from lookup import lookup
     by_lower = lookup(dci="paracetamol")
     by_accents = lookup(dci="Paracétamol")
@@ -314,36 +388,31 @@ def test_dci_route_is_case_and_punctuation_insensitive():
     assert by_lower.dci_base_key == "PARACETAMOL"
 
 
-def test_dci_route_anchors_a_deterministic_row_not_the_doliprane_tablet():
-    """CONFLICT, recorded deliberately.
+def test_dci_route_anchors_an_active_known_dose_not_the_doliprane_brand():
+    """The DCI route identifies a substance, not a brand, so it is expected to
+    anchor somewhere other than the DOLIPRANE brand. PARACETAMOL matches 192
+    rows (89 active) across 28 distinct (form, dose) groups. The anchor rule
+    requires an active row with a *known* dose, then the lowest
+    `(dose_key, form_key)`: the 1000MG COMPRIME tablet, brand DOLI BIEN.
 
-    The brief's spot-check says `--dci "PARACETAMOL"` should give "the same
-    anchor by the DCI route" as `--name "DOLIPRANE"` (the COMPRIME 1000MG
-    tablet). That cannot hold under the pinned anchor rule:
-
-      - The DCI route matches 192 rows (89 active) across 28 distinct
-        (form, dose) groups -- it identifies a substance, not a brand.
-      - Rule 3 takes the lowest `(dose_key, form_key)` among the active rows.
-        For PARACETAMOL that is `dose_key=None` / `SOLUTION_BUVABLE` / id 268,
-        i.e. ACETADOL -- a real, defensible anchor, but not DOLIPRANE.
-
-    To make the spot-check pass, the DCI route would need a tie-break the
-    brief never states (e.g. "prefer the group with the most brands", or
-    "prefer the RE brand"). This test pins the rule as written so the
-    controller can see the divergence rather than have it hidden.
+    The point of the spot-check is that the bare None-first rule cannot win:
+    the anchor is active with a known dose, and its class is the identical
+    seven 1000MG tablets the brand route reaches.
     """
     from lookup import lookup
     res = lookup(dci="PARACETAMOL")
     assert res.status == "found"
     assert res.dci_base_key == "PARACETAMOL"
     assert len(res.matched_rows) == 192
-    # The pinned rule's actual winner:
-    assert res.anchor.brand_key == "ACETADOL"
-    assert res.anchor.form_key == "SOLUTION_BUVABLE"
-    assert res.anchor.dose_key is None
-    # The DOLIPRANE tablet is reachable through this DCI, but only as one of
-    # many rows in the other-dosage / other-form buckets -- not as the anchor.
-    assert res.anchor.brand_key != "DOLIPRANE"
+    assert res.anchor.availability == "active"
+    assert res.anchor.dose_key == "1000MG"
+    assert res.anchor.form_key == "COMPRIME"
+    assert res.anchor.brand_key == "DOLI BIEN"
+    # The class is the same seven tablets the DOLIPRANE brand route reaches.
+    assert {p.brand for p in res.equivalents} == {
+        "ANTALGAN", "DOLI-BIEN", "DOLIPRANE", "DOLYC", "EXPANDOL",
+        "PARACETAMOL PHYSIOPHARM", "ROSADOL"}
+    assert all(p.dose_key is not None for p in res.equivalents)
 
 
 def test_blank_type_is_not_dressed_up_as_a_generic():

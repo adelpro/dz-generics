@@ -16,6 +16,10 @@ deliberately ungenerous:
 - **An unknown dosage is never a match.** ``dose_key`` is ``None`` for 810
   rows. Two ``None``s are not evidence of equivalence, so a row with an
   undeterminable dose can never land in ``equivalents``.
+- **The anchor needs a known dose.** The rule prefers an ``active`` row with
+  a non-null ``dose_key``; if none exists it falls back to an active row, then
+  to any row, and reports that fallback. If the anchor's own dose is unknown,
+  ``equivalents`` is empty: equivalence is undefined without a dosage.
 - **A non-active row is never an equivalent** unless ``include_inactive`` is
   asked for, and then the output says so.
 - **A blank ``type`` is unknown, not ``GE``.** ``GE`` / ``RE`` / ``BIO`` are
@@ -54,6 +58,12 @@ DB_FILENAME = os.path.join("..", "data", "nomenclature.sqlite")
 FUZZY_CUTOFF = 0.85
 # Enough to disambiguate a typo without turning the answer into a list.
 MAX_CANDIDATES = 5
+
+# How the anchor was chosen. The first is the only happy path; the other two
+# are fallbacks that are themselves part of the answer and must be reported.
+ANCHOR_RULE_KNOWN_DOSE = "active_known_dose"
+ANCHOR_RULE_UNKNOWN_DOSE = "active_unknown_dose"
+ANCHOR_RULE_OFF_MARKET = "off_market"
 
 # A stale index answers from an old release silently, which is the failure
 # mode a dated nomenclature makes most dangerous.
@@ -140,6 +150,10 @@ class LookupResult:
     version_label: str = ""
     built_at: str = ""
     include_inactive: bool = False
+    # Which branch of the anchor rule won: a known-dose active row (the only
+    # happy path), or a fallback to an active row with an unknown dose, or to
+    # an off-market row. A fallback is part of the answer, not a detail.
+    anchor_rule: str = ""
     # Every row the query matched and the subset the anchor was chosen from.
     # A brand can hold several rows in the same form and dose, and availability
     # is not a single value per brand, so both are reported rather than hidden.
@@ -188,6 +202,7 @@ class LookupResult:
             "version_label": self.version_label,
             "built_at": self.built_at,
             "include_inactive": self.include_inactive,
+            "anchor_rule": self.anchor_rule,
             "anchor_is_active": self.anchor_is_active,
             "anchor": self.anchor.to_dict() if self.anchor else None,
             "anchor_rows": [p.to_dict() for p in self.anchor_rows],
@@ -300,18 +315,34 @@ def _fuzzy_candidates(connection, typed: str) -> list[Product]:
     return candidates
 
 
-def _pick_anchor(rows: list[Product]) -> Product:
-    """The brief's pinned rule: prefer active rows, then the
-    lowest ``(dose_key, form_key)``. Deterministic, so a test can pin it.
+def _anchor_sort_key(product: Product):
+    """Lowest ``(dose_key, form_key)`` wins, with the row id as the final
+    tie-break. Several rows can share a form and dose, and picking between
+    them arbitrarily would make the anchor jump between releases."""
+    return (product.dose_key or "", product.form_key, product.id or 0)
 
-    A ``None`` dose_key sorts as ``""``, which is why the tie-break also uses
-    the row id: 810 rows have no determinable dose and several can share a
-    form, and picking between them arbitrarily would make the anchor jump
-    between releases.
+
+def _pick_anchor(rows: list[Product]) -> tuple[Product, str]:
+    """The pinned anchor rule, and which branch of it won.
+
+    1. Prefer rows that are ``active`` **and** have a known ``dose_key``; among
+       those take the lowest ``(dose_key, form_key)``.
+    2. Only if none qualifies, fall back -- first to any active row, then to
+       any row at all. A ``None`` dose_key sorts as ``""``, so without step 1
+       the fallback would anchor on an unknown dose purely because ``None``
+       sorts first. The fallback is itself part of the answer, which is why
+       the rule name travels back with the anchor.
     """
+    with_known_dose = [row for row in rows
+                       if row.availability == "active"
+                       and row.dose_key is not None]
+    if with_known_dose:
+        return (min(with_known_dose, key=_anchor_sort_key),
+                ANCHOR_RULE_KNOWN_DOSE)
     active = [row for row in rows if row.availability == "active"]
-    pool = active or rows
-    return min(pool, key=lambda p: (p.dose_key or "", p.form_key, p.id or 0))
+    if active:
+        return min(active, key=_anchor_sort_key), ANCHOR_RULE_UNKNOWN_DOSE
+    return min(rows, key=_anchor_sort_key), ANCHOR_RULE_OFF_MARKET
 
 
 def _anchor_rows(anchor: Product, matched: list[Product]) -> list[Product]:
@@ -328,7 +359,8 @@ def _bucket(anchor: Product, group: list[Product],
     ``equivalents`` is same form *and* same known dose. A ``None`` dose_key is
     never equal to the anchor's dose, so an unknown dose can only ever leave
     the class -- and when the anchor's own dose is ``None`` nothing can match
-    it, so the class is just the anchor itself.
+    it, so the class is empty (the anchor row itself is not equivalent to
+    itself in any useful sense; it lands in ``other_dosages``).
     """
     same_dose = anchor.dose_key is not None
     equivalents, other_dosages, other_forms, inactive = [], [], [], []
@@ -401,7 +433,7 @@ def lookup(name: str | None = None, dci: str | None = None,
                 built_at=meta.get("built_at", ""),
                 include_inactive=include_inactive)
 
-        anchor = _pick_anchor(matched)
+        anchor, anchor_rule = _pick_anchor(matched)
         # A third of the DCI gradings are not clean: 3 rows carry an EMPTY
         # `dci_base_key` ('CARONATE DE MAGNESIUM...', 'MAGNESIUM SULFATE',
         # 'METOCLOPRAMIDE...'), and 194 brands span more than one base key.
@@ -419,7 +451,7 @@ def lookup(name: str | None = None, dci: str | None = None,
             query=query, status="found", dci_base_key=anchor.dci_base_key,
             anchor=anchor, version_label=meta.get("version_label", ""),
             built_at=meta.get("built_at", ""),
-            include_inactive=include_inactive,
+            include_inactive=include_inactive, anchor_rule=anchor_rule,
             matched_rows=sorted(matched, key=_sort_key),
             anchor_rows=_anchor_rows(anchor, matched))
         (result._equivalents, result._other_dosages,
@@ -540,10 +572,14 @@ def render_text(result: LookupResult) -> str:
     anchor = result.anchor
     availability = availability_label(anchor.availability)
     lines = _header(result) + [""]
+    dose_known = anchor.dose_key is not None
     lines.append(f"Anchor: {anchor.brand} -- {anchor.dci}")
     lines.append(f"  form         : {anchor.form}")
     lines.append(f"  dosage       : {anchor.dosage}  "
-                 f"[key {anchor.dose_key or 'unknown'}]")
+                 f"[key {anchor.dose_key or 'unknown'}]"
+                 + ("" if dose_known
+                    else "  *** NOT COMPARABLE -- the dose is unknown, so no "
+                         "equivalence class can be formed ***"))
     lines.append(f"  status       : {availability}"
                  + ("" if result.anchor_is_active
                     else "  *** OFF-MARKET -- do not present as available ***"))
@@ -561,6 +597,16 @@ def render_text(result: LookupResult) -> str:
                      f"at the {availability} status above"
                      + (f" ({others} other rows are listed below)." if others
                         else "."))
+    if result.anchor_rule == ANCHOR_RULE_UNKNOWN_DOSE:
+        lines.append("  NOTE: no active row of this substance has a "
+                     "determinable dose, so the anchor falls back to an "
+                     "unknown-dose row. Its dose is NOT comparable and the "
+                     "equivalence class below is empty by design.")
+    elif result.anchor_rule == ANCHOR_RULE_OFF_MARKET:
+        lines.append("  NOTE: no row of this substance is active, so the "
+                     "anchor falls back to an off-market row. Nothing here is "
+                     "presented as available, and no equivalence class forms.")
+
     if anchor.availability == "withdrawn":
         # Opaque text by design: `withdrawn_at` holds ISO strings and verbatim
         # words like 'RETRAIT', so it is reprinted, never parsed.
@@ -572,8 +618,10 @@ def render_text(result: LookupResult) -> str:
         lines.append("  reason       : registration not renewed")
 
     lines.append("")
+    dose_heading = (f"same dose ({anchor.dose_key})" if dose_known
+                    else "dose UNKNOWN -- not comparable")
     lines.append(f"EQUIVALENTS -- same DCI, same form ({anchor.form_key}), "
-                 f"same dose ({anchor.dose_key or 'unknown'}):")
+                 f"{dose_heading}:")
     lines.append("")
     lines.extend(_render_bucket(result.equivalents, "none."))
 
