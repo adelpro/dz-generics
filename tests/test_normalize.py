@@ -225,6 +225,34 @@ def test_dose_key_returns_none_when_the_strength_is_not_at_the_start():
     assert dose_key("AMP. DE 5ML") is None
 
 
+def test_dose_key_returns_none_for_a_dash_separated_dose_schedule():
+    """Two titration regimens are two different strengths, not one key.
+
+    Found by a before/after sweep of every row, not by the findings: the
+    reconstitution rows (``5MG/ML (100MG/20ML - 500MG/100ML)``) are handled
+    correctly by the first-expression rule, but a *top-level* dash followed
+    by a number is a second dose, and reading only the first declared two
+    different schedules identical::
+
+        30µG/0,05MG/6JRS - 40µG/0,075MG/5JRS - 30µG/0,125MG/10JRS  -> 0.03MG/0.05MG
+        0,03MG/0,05MG - 0,04MG/0,075MG - 0,03MG/0,125MG            -> 0.03MG/0.05MG
+
+    A dash followed by a *word* is not a dose, and a dash inside brackets is
+    a reconstitution table. Both must keep their key.
+    """
+    assert dose_key(
+        "30µG/0,05MG/6JRS - 40µG/0,075MG/5JRS - 30µG/0,125MG/10JRS") is None
+    assert dose_key("0,03MG/0,05MG - 0,04MG/0,075MG - 0,03MG/0,125MG") is None
+    assert dose_key("100ML/100ML - 250ML/250ML") is None
+    # A dash before a word is punctuation, not a second dose.
+    assert dose_key("160MG/SACHET-DOSE (288MG/SACHET ACETYLSALICYLATE)") \
+        == "160MG/SACHET"
+    assert dose_key("74,4MG/SACHET- DOSE") == "74.4MG/SACHET"
+    # A dash inside brackets is a reconstitution table for the same stock.
+    assert dose_key("5MG/ML (100MG/20ML - 500MG/100ML)") == "5MG/ML"
+    assert dose_key("0,5MG/ML (25MG/50ML) - (50MG/100ML)") == "0.5MG/ML"
+
+
 # --- dci_keys ------------------------------------------------------------------
 
 def test_dci_keys_group_salt_and_base():

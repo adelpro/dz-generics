@@ -1534,6 +1534,9 @@ _UNIT_RE = re.compile(r"\s*([A-Za-zµμΜ]+%?|%)\**")
 _PAREN_GROUP_RE = re.compile(r"\([^()]*\)")
 _COMPARTMENT_RE = re.compile(r"\bCOMPARTIMENT\b", re.IGNORECASE)
 _PLUS_RE = re.compile(r"\+")
+# A top-level dash immediately followed by a number: a second dose, not a
+# hyphen. The digit lookahead is what keeps ``74,4MG/SACHET- DOSE`` out.
+_DASH_DOSE_RE = re.compile(r"-\s*\d")
 
 # Only exact, dimensionally-safe conversions. G->MG, µg/ug/mcg->MG.
 # UI and U are NOT here and must never be: the UI->mg factor is substance
@@ -1579,10 +1582,22 @@ def _is_multi_ingredient(text: str) -> bool:
     CITRATE ...)`` (one element, two salts) and ``567,7MG ... Fer (2+) 100MG``
     (an oxidation state, not an addition). Flagging those would discard a
     single-ingredient strength to protect nothing.
+
+    A top-level ``-`` followed by a number is a second *dose* rather than a
+    second active: a titration schedule, which the first-expression rule
+    would otherwise flatten onto its opening term. Two different schedules
+    landed on one key that way. The digit lookahead keeps the hyphen out of
+    it (``74,4MG/SACHET- DOSE`` keeps its key), and blanking the bracketed
+    groups keeps a reconstitution table out of it, so
+    ``5MG/ML (100MG/20ML - 500MG/100ML)`` still keys the stock concentration
+    ``5MG/ML`` -- the right answer for all 23 rows in the workbook that
+    state a dash inside brackets.
     """
     if _COMPARTMENT_RE.search(text):
         return True
-    return bool(_PLUS_RE.search(_PAREN_GROUP_RE.sub(" ", text)))
+    top_level = _PAREN_GROUP_RE.sub(" ", text)
+    return bool(_PLUS_RE.search(top_level)
+                or _DASH_DOSE_RE.search(top_level))
 
 
 def _read_term(text: str, start: int = 0) -> tuple[float | None, str, int]:
