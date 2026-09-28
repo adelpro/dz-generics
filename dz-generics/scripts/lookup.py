@@ -135,7 +135,7 @@ class Product:
 class LookupResult:
     """The answer: the anchor, its class, and how the query resolved.
 
-    ``status`` is one of ``found`` / ``ambiguous`` / ``not_found``. The four
+    ``status`` is one of ``found`` / ``ambiguous`` / ``not_found``. The five
     class buckets are properties because the anchor is already here; passing
     it back in would be redundant. They are only populated when
     ``anchor`` is set -- an ambiguous or missed query resolves nothing, and
@@ -165,6 +165,8 @@ class LookupResult:
         default_factory=list, repr=False)
     _other_dosages: list[Product] = dataclasses.field(
         default_factory=list, repr=False)
+    _unknown_dose: list[Product] = dataclasses.field(
+        default_factory=list, repr=False)
     _other_forms: list[Product] = dataclasses.field(
         default_factory=list, repr=False)
     _inactive: list[Product] = dataclasses.field(
@@ -179,6 +181,17 @@ class LookupResult:
     def other_dosages(self) -> list[Product]:
         """Same DCI base and form, a *different* known dose."""
         return self._other_dosages
+
+    @property
+    def unknown_dose(self) -> list[Product]:
+        """Same DCI base and form, dose undeterminable.
+
+        An unknown dose is not a *different* dose: it cannot be compared with
+        the anchor's, so it is not evidence of a difference. Reported here
+        rather than under ``other_dosages`` so the answer never asserts a
+        dosage difference the data does not support.
+        """
+        return self._unknown_dose
 
     @property
     def other_forms(self) -> list[Product]:
@@ -210,6 +223,7 @@ class LookupResult:
             "candidates": [p.to_dict() for p in self.candidates],
             "equivalents": [p.to_dict() for p in self.equivalents],
             "other_dosages": [p.to_dict() for p in self.other_dosages],
+            "unknown_dose": [p.to_dict() for p in self.unknown_dose],
             "other_forms": [p.to_dict() for p in self.other_forms],
             "inactive": [p.to_dict() for p in self.inactive],
         }
@@ -353,41 +367,48 @@ def _anchor_rows(anchor: Product, matched: list[Product]) -> list[Product]:
 
 
 def _bucket(anchor: Product, group: list[Product],
-            include_inactive: bool) -> tuple[list, list, list, list]:
+            include_inactive: bool) -> tuple[list, list, list, list, list]:
     """Split the anchor's DCI base group the way the brief defines it.
 
     ``equivalents`` is same form *and* same known dose. A ``None`` dose_key is
     never equal to the anchor's dose, so an unknown dose can only ever leave
     the class -- and when the anchor's own dose is ``None`` nothing can match
-    it, so the class is empty (the anchor row itself is not equivalent to
-    itself in any useful sense; it lands in ``other_dosages``).
+    it, so the class is empty.
+
+    A same-form row with an unknown dose goes to ``unknown_dose``, never to
+    ``other_dosages``: an unknown dose is not a *different* dose, so calling it
+    one would assert a difference the data does not support. That holds whether
+    the row is active or not -- ``include_inactive`` only folds off-market rows
+    at a *known* dose back in, so it can never smuggle an unknown dose into
+    ``equivalents``.
     """
     same_dose = anchor.dose_key is not None
-    equivalents, other_dosages, other_forms, inactive = [], [], [], []
+    equivalents, other_dosages, unknown_dose = [], [], []
+    other_forms, inactive = [], []
     for row in group:
         if row.form_key != anchor.form_key:
             other_forms.append(row)
+        elif row.dose_key is None:
+            unknown_dose.append(row)
         elif same_dose and row.dose_key == anchor.dose_key:
             (equivalents if row.availability == "active"
              else inactive).append(row)
         else:
-            # Same form, a different (or unknown) dose. An unknown dose is
-            # 'different' rather than 'same': two Nones are not evidence of
-            # equivalence, so such a row can never reach `equivalents`.
+            # Same form, a *different known* dose. Two Nones are not evidence
+            # of equivalence, and a null dose never reaches this branch.
             other_dosages.append(row)
 
     if include_inactive:
-        # The rare request for the full historical picture. Only rows already
-        # at the anchor's form and dose fold back in, so an unknown-dose row
-        # still cannot masquerade as an equivalent.
-        widened = [r for r in other_dosages if r.availability != "active"
-                   and same_dose and r.dose_key == anchor.dose_key]
-        other_dosages = [r for r in other_dosages if r not in widened]
-        equivalents = sorted(equivalents + inactive + widened, key=_sort_key)
+        # The rare request for the full historical picture: the off-market
+        # rows already at the anchor's known form and dose fold back in.
+        # ``unknown_dose`` is not touched -- the flag is about availability,
+        # not about dose.
+        equivalents = sorted(equivalents + inactive, key=_sort_key)
         inactive = []
 
     return (sorted(equivalents, key=_sort_key),
             sorted(other_dosages, key=_sort_key),
+            sorted(unknown_dose, key=_sort_key),
             sorted(other_forms, key=_sort_key),
             sorted(inactive, key=_sort_key))
 
@@ -454,7 +475,7 @@ def lookup(name: str | None = None, dci: str | None = None,
             include_inactive=include_inactive, anchor_rule=anchor_rule,
             matched_rows=sorted(matched, key=_sort_key),
             anchor_rows=_anchor_rows(anchor, matched))
-        (result._equivalents, result._other_dosages,
+        (result._equivalents, result._other_dosages, result._unknown_dose,
          result._other_forms, result._inactive) = buckets
         return result
     finally:
@@ -513,19 +534,22 @@ def _product_line(index: int, product: Product, *, tag: str = "") -> list[str]:
 
 
 def _render_bucket(products: list[Product], empty_note: str,
-                   limit: int | None = None) -> list[str]:
+                   limit: int | None = None, tag=None) -> list[str]:
     """Render a bucket, truncating to ``limit`` items when given.
 
     ``limit`` exists because a DCI can reach hundreds of rows across the whole
     substance group; a terminal answer has to stay readable, and ``--json`` is
-    the route to the complete list.
+    the route to the complete list. ``tag`` is an optional callable returning a
+    per-row suffix (used to mark off-market rows) so a bucket that can hold
+    more than one availability stays honest.
     """
     if not products:
         return [f"  {empty_note}"]
     shown = products if limit is None else products[:limit]
     lines: list[str] = []
     for i, product in enumerate(shown, 1):
-        lines.extend(_product_line(i, product))
+        lines.extend(_product_line(i, product,
+                                   tag=tag(product) if tag else ""))
     if limit is not None and len(products) > limit:
         lines.append(f"  ... and {len(products) - limit} more "
                      f"(use --json for the full list).")
@@ -630,6 +654,15 @@ def render_text(result: LookupResult) -> str:
                  "(NOT equivalent):")
     lines.append("")
     lines.extend(_render_bucket(result.other_dosages, "none.", limit=20))
+
+    lines.append("")
+    lines.append("Unknown dose -- same DCI and form, dose not comparable "
+                 "(NOT evidence of a difference):")
+    lines.append("")
+    lines.extend(_render_bucket(
+        result.unknown_dose, "none.", limit=20,
+        tag=lambda p: "" if p.availability == "active"
+        else f"  [{availability_label(p.availability)}]"))
 
     lines.append("")
     lines.append("Other forms -- same DCI, different form "

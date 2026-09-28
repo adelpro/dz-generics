@@ -440,12 +440,14 @@ def test_lookup_refuses_to_write_to_the_index(tmp_path):
     """The index is read-only at query time. Opening it read-write would let a
     bug in the renderer corrupt the thing every answer depends on."""
     import hashlib
-    before = hashlib.sha256(open(DB_PATH, "rb").read()).hexdigest()
+    with open(DB_PATH, "rb") as fh:
+        before = hashlib.sha256(fh.read()).hexdigest()
     from lookup import lookup
     for query in ({"name": "doliprane"}, {"dci": "PARACETAMOL"},
                   {"name": "polaramine"}, {"name": "zzzznotadrug"}):
         lookup(**query).to_json()
-    after = hashlib.sha256(open(DB_PATH, "rb").read()).hexdigest()
+    with open(DB_PATH, "rb") as fh:
+        after = hashlib.sha256(fh.read()).hexdigest()
     assert before == after
 
 
@@ -476,8 +478,16 @@ def test_no_query_without_an_exact_match_ever_produces_an_anchor():
 
 def test_no_none_dose_row_ever_reaches_a_class_across_the_index():
     """Swept, not spot-checked: every active row whose dose is undeterminable
-    is looked up as a brand, and no result may place a None-dose row in any
-    equivalence bucket."""
+    is looked up as a brand, and no result may place a None-dose row in a
+    bucket that *claims* something about its dose.
+
+    ``equivalents`` and ``other_dosages`` are the two buckets that assert a
+    dose relation ("same dose" / "different dose"), so neither may hold a row
+    whose dose is unknown -- that is the whole point of the ``unknown_dose``
+    bucket. ``other_forms`` is bucketed by form alone and is exempt: it makes
+    no dose claim, so a different-form row with an unknown dose legitimately
+    lands there printed as ``dose unknown``.
+    """
     from lookup import lookup
     con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     try:
@@ -492,8 +502,54 @@ def test_no_none_dose_row_ever_reaches_a_class_across_the_index():
         if not res.anchor:
             continue
         assert all(p.dose_key is not None for p in res.equivalents)
+        assert all(p.dose_key is not None for p in res.other_dosages)
+        # unknown_dose is for null doses and nothing else.
+        assert all(p.dose_key is None for p in res.unknown_dose)
         if res.anchor.dose_key is None:
             assert res.equivalents == []
+
+
+def test_an_unknown_dose_is_not_reported_as_a_different_strength():
+    """ACICLOSINA anchors a 3% eye ointment; four same-form rows have no
+    determinable dose. They used to be reported under ``other_dosages``, whose
+    label says "different dose -- NOT equivalent" -- a dosage *difference* the
+    data does not support. The dose is unknown, not different, so they belong
+    in ``unknown_dose`` and the text may not call them a different strength."""
+    from lookup import lookup, render_text
+    res = lookup(name="ACICLOSINA")
+    assert res.status == "found"
+    assert res.anchor.form_key == "POMMADE_OPHTALMIQUE"
+    assert res.anchor.dose_key == "3%"
+    unknown = {p.brand_key for p in res.unknown_dose}
+    assert {"ACLOVIR", "CUSIVIRAL OPHTALMIQUE", "VIRAMED",
+            "ZOVIRAX"} <= unknown
+    assert all(p.dose_key is None for p in res.unknown_dose)
+    assert all(p.form_key == res.anchor.form_key for p in res.unknown_dose)
+    # No null dose is left behind in the bucket that claims a difference.
+    assert all(p.dose_key is not None for p in res.other_dosages)
+    assert not (unknown & {p.brand_key for p in res.other_dosages})
+
+    text = render_text(res)
+    block = text.split("Unknown dose")[1].split("Other forms")[0]
+    assert "not comparable" in block.lower()
+    assert "different dose" not in block.lower()
+
+
+def test_the_staleness_boundary_is_pinned():
+    """90 days is the line: at exactly 90 the index is still trusted, at 91 it
+    warns. An empty or unparseable build date warns rather than pretending the
+    index is fresh. The code is correct; this test stops it drifting."""
+    import datetime
+    from lookup import staleness_note
+    now = datetime.datetime(2026, 9, 28, 12, 0, 0)
+    assert staleness_note(
+        (now - datetime.timedelta(days=90)).isoformat(), now=now) == ""
+    at_91 = staleness_note(
+        (now - datetime.timedelta(days=91)).isoformat(), now=now)
+    assert "WARNING" in at_91
+    assert "91 days" in at_91
+    assert "WARNING" in staleness_note("", now=now)
+    assert "WARNING" in staleness_note("not-a-date", now=now)
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +622,8 @@ def test_cli_json_output_is_parseable_and_names_the_buckets():
     assert payload["version_label"] == "Août 2026"
     assert payload["status"] == "found"
     assert payload["anchor"]["brand_key"] == "DOLIPRANE"
-    for key in ("equivalents", "other_dosages", "other_forms", "inactive"):
+    for key in ("equivalents", "other_dosages", "unknown_dose", "other_forms",
+                "inactive"):
         assert key in payload
 
 
