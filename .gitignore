@@ -1,0 +1,11 @@
+# Ministry source files are downloaded, not redistributed.
+# See references/answering.md and the README data-provenance section.
+data/source/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# SDD scratch workspace
+.superpowers/
+dz-generics-workspace/
