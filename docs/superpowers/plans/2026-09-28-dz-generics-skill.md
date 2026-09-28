@@ -42,16 +42,20 @@ These are the five input classes most likely to break this and not yet pinned by
 | `dz-generics/scripts/normalize.py` | Pure functions: text folding, form canonicalization, dose parsing, DCI keying. No I/O, no database. |
 | `dz-generics/scripts/build_index.py` | Reads the `.xlsx`, resolves sheets and headers, writes `data/nomenclature.sqlite`. |
 | `dz-generics/scripts/lookup.py` | Read-only CLI over the SQLite file. Resolves input to a DCI, emits equivalence classes. |
-| `dz-generics/scripts/fetch_source.py` | Optional: scrape the ministry page for the newest `.xlsx` URL and download it. |
+| `dz-generics/scripts/profile_source.py` | Prints row counts, form/dosage distributions and unparsed-value counts from a source file. The tool for re-checking assumptions when the ministry changes a column. |
+| `dz-generics/scripts/fetch_source.py` | Downloads the newest ministry `.xlsx`. Optional; never on the query path. |
 | `dz-generics/data/nomenclature.sqlite` | The built index. ~5.4k rows, expected under 5 MB. |
 | `dz-generics/references/schema.md` | Exact source columns, sheet names and quirks, `TYPE`/`STATUT` semantics. Written from real inspection, not assumption. |
 | `dz-generics/references/answering.md` | How to phrase results, the safety note, multilingual output. |
 | `dz-generics/SKILL.md` | Trigger description and the operating instructions. |
+| `tests/conftest.py` | Puts `dz-generics/scripts` on `sys.path` and exports `SOURCE_XLSX`. Without it no test can import the modules. |
 | `tests/test_normalize.py` | Unit tests for the normalization layer. |
 | `tests/test_build_index.py` | Header resolution, sheet handling, row-count guard. |
 | `tests/test_lookup.py` | End-to-end against the real built index. |
+| `README.md` | Public repo front door: what it does, install, refresh, data provenance, disclaimer. |
 
-Tests live in the repo but are excluded from the packaged skill.
+Tests live at the repo root; the installable skill is the `dz-generics/`
+directory alone, so no test file ever reaches `~/.config/opencode/skills/`.
 
 ---
 
@@ -73,14 +77,35 @@ Filename patterns are inconsistent across releases (`clean_` prefix appears and 
 ## Task 1: Pin the source schema
 
 **Files:**
+- Create: `tests/conftest.py`
 - Create: `tests/test_build_index.py`
+- Create: `dz-generics/scripts/build_index.py`
 - Create: `dz-generics/references/schema.md`
 
 **Interfaces:**
 - Consumes: `data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx`
-- Produces: `references/schema.md` — the exact header strings, sheet names, and `TYPE`/`STATUT` value sets, which Task 2 and Task 5 hardcode.
+- Produces: `find_header(headers: list[str], prefix: str) -> int | None` in `build_index.py`; `references/schema.md` with the exact header strings, sheet names, and `TYPE`/`STATUT` value sets, which Task 2 and Task 3 hardcode; and `tests/conftest.py` exporting `SOURCE_XLSX`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write `tests/conftest.py`**
+
+Every test in this project does a bare `from normalize import fold` or
+`from build_index import find_header`, but those modules live in
+`dz-generics/scripts/` while the tests live in `tests/`. pytest puts the
+*test* directory on `sys.path`, not the script directory, so without this
+file no test can ever pass. Insert the script directory and define
+`SOURCE_XLSX`:
+
+```python
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dz-generics", "scripts"))
+
+SOURCE_XLSX = os.path.join(
+    os.path.dirname(__file__), "..", "data", "source",
+    "NOMENCLATURE.VERSION.AOUT_.2026-.xlsx",
+)
+```
+
+- [ ] **Step 2: Write the failing test**
 
 ```python
 def test_headers_resolve_by_prefix():
@@ -93,12 +118,13 @@ def test_headers_resolve_by_prefix():
     assert find_header(headers, "DOSAGE") is None
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run: `python -m pytest tests/test_build_index.py::test_headers_resolve_by_prefix -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'build_index'`
+Expected: FAIL with `ImportError: cannot import name 'find_header' from 'build_index'`
+(the module does not exist yet — `conftest.py` is what puts it on the path)
 
-- [ ] **Step 3: Dump the real headers and value sets**
+- [ ] **Step 4: Dump the real headers and value sets**
 
 ```bash
 python -c "import openpyxl,sys;wb=openpyxl.load_workbook(r'data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx',read_only=True,data_only=True);ws=wb['Nomenclature Aout 2026'];rows=list(ws.iter_rows(min_row=16,max_row=16,values_only=True))[0];[print(i,repr(c)) for i,c in enumerate(rows) if c is not None]"
@@ -106,19 +132,19 @@ python -c "import openpyxl,sys;wb=openpyxl.load_workbook(r'data/source/NOMENCLAT
 
 Also dump `SELECT`-equivalent frequency counts of `FORME`, `TYPE`, `STATUT` over column 6, 17, 18 of the data rows. Write both into `references/schema.md` verbatim, including the exact trailing space in `Non Renouvelés `.
 
-- [ ] **Step 4: Implement `find_header(headers: list[str], prefix: str) -> int | None` in `dz-generics/scripts/build_index.py`**
+- [ ] **Step 5: Implement `find_header(headers: list[str], prefix: str) -> int | None` in `dz-generics/scripts/build_index.py`**
 
 Case-insensitive, accent-insensitive `startswith` over the header list; returns the index of the first match or `None`. This is why a truncated or renamed suffix like `(DCI)` cannot break the build.
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 6: Run the test to verify it passes**
 
 Run: `python -m pytest tests/test_build_index.py::test_headers_resolve_by_prefix -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add tests/test_build_index.py dz-generics/scripts/build_index.py dz-generics/references/schema.md
+git add tests/conftest.py tests/test_build_index.py dz-generics/scripts/build_index.py dz-generics/references/schema.md
 git commit -m "feat: pin ministry source schema and header resolution"
 ```
 
@@ -203,18 +229,35 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'normalize'`
 Run: `python -m pytest tests/test_normalize.py -v`
 Expected: 6 passed
 
-- [ ] **Step 5: Verify against real data, not just fixtures**
+- [ ] **Step 5: Write `dz-generics/scripts/profile_source.py` and run it against the real file**
+
+Unit tests only prove the normalizer handles the cases you already thought
+of. This script is how you find the ones you did not — and it is the tool to
+re-run whenever the ministry changes a column, so it ships as a real
+artifact rather than a throwaway command. It reads the main sheet, skips to
+row 17, and prints: row count, a descending frequency count of `form_key`,
+how many dosages `dose_key` returned `None` for, and the 25 most common raw
+`FORME` strings. Give it a `main()`, an `argparse` path argument, and a
+`if __name__ == "__main__":` guard.
+
+Then run it:
 
 ```bash
-python -c "import sys;sys.path.insert(0,'dz-generics/scripts');import openpyxl,collections;from normalize import form_key,dose_key;wb=openpyxl.load_workbook(r'data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx',read_only=True,data_only=True);ws=wb['Nomenclature Aout 2026'];c=collections.Counter();d=0;n=0;[ (c.update([form_key(r[5])]), globals().__setitem__('d',d+1) if dose_key(r[6]) else None, globals().__setitem__('n',n+1) if r[5] else None) for r in ws.iter_rows(min_row=17,values_only=True)];print('rows',n);[print(k,v) for k,v in c.most_common()];print('unparsed dosages',d)"
+python dz-generics/scripts/profile_source.py data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx
 ```
 
-Expected: `unparsed dosages 0`, and no form key accounting for more than a few percent of rows under `NON_SPECIFIE` without a comment explaining why.
+Expected: `unparsed dosages: 0`, and `NON_SPECIFIE` under 5% of rows.
+
+**Gate:** if `NON_SPECIFIE` is 5% or more, the `FORME` placeholder is common
+enough that Step 3's `FORM_CANON` is missing real values. Go back, extend it,
+and comment the `FORM_CANON` dict with which observed values map to
+`NON_SPECIFIE` and why. Do not proceed to Task 3 with an unexplained gap —
+Task 3 writes these keys into the index and Task 4 reports on them.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add dz-generics/scripts/normalize.py tests/test_normalize.py
+git add dz-generics/scripts/profile_source.py dz-generics/scripts/normalize.py tests/test_normalize.py
 git commit -m "feat: normalization layer for form, dosage and DCI keys"
 ```
 
@@ -228,7 +271,7 @@ git commit -m "feat: normalization layer for form, dosage and DCI keys"
 
 **Interfaces:**
 - Consumes: `find_header` (Task 1), `fold`, `form_key`, `dose_key`, `dci_keys` (Task 2)
-- Produces: `build(source_xlsx: str, out_sqlite: str) -> dict` returning `{"row_count": int, "withdrawn": int, "not_renewed": int, "version_label": str}`. Writes the schema below.
+- Produces: `build(source_xlsx: str, out_sqlite: str, previous_row_count: int | None = None) -> dict` returning `{"row_count": int, "withdrawn": int, "not_renewed": int, "version_label": str}`, plus the `BuildError` exception. Writes the schema below.
 
 Schema — pinned, because Task 4 and Task 5 both query it by these exact names:
 
@@ -327,7 +370,21 @@ git commit -m "feat: build SQLite index from ministry nomenclature"
 
 **Interfaces:**
 - Consumes: `data/nomenclature.sqlite` (Task 3), `fold` (Task 2)
-- Produces: CLI `lookup.py --name <str> | --dci <str> | --code <str>`, optional `--json`, optional `--include-inactive`. Exit 0 on a hit, 1 on no hit, 2 on a usage error.
+- Produces:
+  - `LookupResult` — a dataclass with fields `query: str`, `status: str`
+    (one of `"found"`, `"ambiguous"`, `"not_found"`), `dci_base_key: str | None`,
+    `anchor: Product | None`, `candidates: list[Product]`, `version_label: str`,
+    and four **properties**: `equivalents`, `other_dosages`, `other_forms`,
+    `inactive`. Properties, not methods — the anchor is already on the result,
+    so passing it back in is redundant.
+  - `Product` — a dataclass mirroring one `product` row, exposing `brand`,
+    `dci`, `form`, `form_key`, `dosage`, `dose_key`, `lab`, `country`,
+    `type`, `availability`.
+  - `lookup(name: str | None = None, dci: str | None = None, code: str | None = None) -> LookupResult`
+  - `LookupResult.to_json() -> str`
+  - CLI `lookup.py --name <str> | --dci <str> | --code <str>`, optional
+    `--json`, optional `--include-inactive`. Exit 0 on a hit, 1 on no hit,
+    2 on a usage error.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -337,17 +394,17 @@ def test_paracetamol_tablet_lookup_finds_generics():
     from lookup import lookup
     res = lookup(name="doliprane")
     assert res.query == "doliprane"
+    assert res.status == "found"
     assert res.dci_base_key is not None
-    equivalents = res.equivalents(res.anchor)
-    assert len(equivalents) > 1
-    assert all(p.form_key == "COMPRIME" for p in equivalents)
+    assert len(res.equivalents) > 1
+    assert all(p.form_key == "COMPRIME" for p in res.equivalents)
 
 
 def test_different_dosage_is_not_an_equivalent():
     from lookup import lookup
     res = lookup(name="doliprane")
-    other = res.equivalents(res.anchor)
-    assert all(p.dose_key == res.anchor.dose_key for p in other)
+    assert all(p.dose_key == res.anchor.dose_key for p in res.equivalents)
+    assert all(p.dose_key != res.anchor.dose_key for p in res.other_dosages)
 
 
 def test_unknown_name_returns_no_match_not_a_guess():
@@ -385,7 +442,7 @@ Pick the **anchor**: the best match for the query, preferring an exact brand hit
 
 Print `version_label` on every invocation. If `built_at` is older than 90 days, print a staleness warning. Use compact aligned text by default and `--json` for structured output.
 
-- [ ] **Step 4: Run the tests to verify they passes**
+- [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_lookup.py -v`
 Expected: 5 passed
@@ -433,11 +490,13 @@ One worked example per language. Show the distinction between "same DCI, same fo
 - [ ] **Step 3: Verify the skill is self-contained**
 
 ```bash
-python -c "import os,shutil;shutil.copytree('dz-generics','/tmp/skilltest');print(sorted(os.listdir('/tmp/skilltest')))"
-python /tmp/skilltest/scripts/lookup.py --name "DOLIPRANE"
+python -c "import os,shutil,tempfile;p=os.path.join(tempfile.gettempdir(),'skilltest');shutil.rmtree(p,ignore_errors=True);shutil.copytree('dz-generics',p);print(sorted(os.listdir(p)))"
+python "%TEMP%/skilltest/scripts/lookup.py" --name "DOLIPRANE"
 ```
 
-Expected: the lookup runs from a copy with no reference to the repo, proving the skill carries its own data.
+Expected: the lookup runs from a copy in the system temp directory with no
+reference to the repo, proving the skill carries its own data. On PowerShell
+use `$env:TEMP` in place of `%TEMP%`.
 
 - [ ] **Step 4: Commit**
 
