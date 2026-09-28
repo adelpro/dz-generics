@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dz.generics",
+  "version": "1.0.0",
+  "description": "Generic equivalents of Algerian medicines by brand name or DCI, from the Ministry of Industry nomenclature",
+  "author": {
+    "name": "Adel Ben Yahia"
+  },
+  "homepage": "https://github.com/adelpro/dz-generics",
+  "repository": "https://github.com/adelpro/dz-generics",
+  "license": "MIT",
+  "keywords": ["algeria", "pharmacy", "medicines", "generics", "nomenclature"]
+}
