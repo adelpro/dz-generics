@@ -197,9 +197,12 @@ def test_form_key_placeholder_does_not_match_everything():
 
 
 def test_dose_key_ratio_equals_concentration():
-    """Review Focus #2: 0,5MG/5ML and 1MG/ML are the same strength."""
+    """Review Focus #2. Both sides of each pair are the same strength.
+    NB an earlier draft of this plan asserted 0,5MG/5ML == 1MG/ML. That is
+    false -- 0.1 vs 1.0 mg/ml -- and the implementer caught it."""
     from normalize import dose_key
-    assert dose_key("0,5MG/5ML") == dose_key("1MG/ML")
+    assert dose_key("0,5MG/5ML") == dose_key("0,1MG/ML")
+    assert dose_key("5MG/5ML") == dose_key("1MG/ML")
     assert dose_key("6,25MG/5ML") == dose_key("1,25MG/ML")
 
 
@@ -207,6 +210,53 @@ def test_dose_key_distinct_strengths_stay_distinct():
     from normalize import dose_key
     assert dose_key("500MG") != dose_key("1G")
     assert dose_key("10MG") != dose_key("20MG")
+
+
+def test_dose_key_keeps_its_dimension_through_a_space():
+    """The bug that cost a fix round. A space between the number and the
+    unit must not cost the unit: 10 UI/ML is not the bare number 10, and
+    40 MG/0.8ML is not 40."""
+    from normalize import dose_key
+    assert dose_key("10 UI/ML") == dose_key("10UI/ML")
+    assert dose_key("40 MG/0.8ML") == "50MG/ML"
+    assert dose_key("60 MG/1.5 ML") == "40MG/ML"
+
+
+def test_dose_key_never_collapses_across_dimensions():
+    """A mass, a concentration, a volume and a percentage are different
+    quantities even when the number is the same."""
+    from normalize import dose_key
+    keys = {dose_key("0,25 \u00b5G"), dose_key("0.25 MG/ML"),
+            dose_key("0.5 ML"), dose_key("0,5 %")}
+    assert None not in keys
+    assert len(keys) == 4
+
+
+def test_dose_key_is_never_dimensionless():
+    """No key may be a bare number. Without a dimension a mass, a
+    concentration, a percentage and a volume all collide."""
+    from normalize import dose_key
+    for raw in ["10 UI/ML", "0,25 \u00b5G", "0.5 ML", "0.25 MG/ML",
+                "100 MG", "3,5MG/FL.", "0,05%", "0.02"]:
+        key = dose_key(raw)
+        assert key is None or key.rstrip("0123456789."), f"{raw!r} -> {key!r}"
+
+
+def test_dose_key_keeps_ui_as_ui():
+    """UI is not MG. The conversion is substance-specific and unknown here."""
+    from normalize import dose_key
+    key = dose_key("100UI/ML (3.5MG/ML)")
+    assert key is not None and "UI" in key
+    assert dose_key("10 UI/ML") != dose_key("10 MG/ML")
+
+
+def test_dose_key_returns_none_for_multi_ingredient_strengths():
+    """10+100+300 IR/ML and COMPARTIMENT A/B describe several actives; they
+    are not a single dose identity."""
+    from normalize import dose_key
+    assert dose_key("0,1IR/ML+1IR/ML+10IR/ML") is None
+    assert dose_key("COMPARTIMENT A (0,25 L) ,COMPARTIMENT B (4,75 L )") is None
+    assert dose_key("15MG+45MG") is None
 
 
 def test_dci_keys_group_salt_and_base():
@@ -257,12 +307,46 @@ Map the literal `FORME` to `NON_SPECIFIE`, and give non-form values
 (`FLACON`, `---`, `LAIT EN POUDRE`) their own keys rather than collapsing
 them into a form.
 
-`dose_key`: extract number, unit, and optional `/per` amount. Decimal comma
-becomes a period — this is 1025 rows, not an edge case. A `X per Y` ratio is
-reduced to a base ratio by dividing, so the key is comparable across ratio
-and concentration forms. Convert `G`→`MG`, `µG`→`MG` at a factor of 1000,
-keeping an ML denominator as a number. Return `None` when no number is found,
-and let the caller treat that as *unknown*.
+**Every key in `FORM_CANON` must be a string that actually occurs in the
+workbook.** The first implementation shipped 90 hand-written entries
+alongside the observed ones, under a comment claiming the table was derived
+from the source — so a reader could not tell which mappings were evidence and
+which were guesswork. That is exactly what the "source of truth is the
+ministry file, nothing else" constraint forbids. Either the entry is observed,
+or it is not in the table. Add a test that reads the workbook, collects the
+distinct `FORME` values, and asserts every `FORM_CANON` key is among them; a
+new ministry release with a spelling you have not seen then falls through to
+the identity path rather than being silently mis-mapped.
+
+`dose_key`, and the rules are ordered because they interact:
+
+1. Take the **first** strength expression in the string and ignore the rest.
+   A string may restate the same strength in a second notation — `100UI/ML
+   (3.5MG/ML)`, `0,1% (0,1G/100G)` — and picking up a unit from a *different*
+   expression relabels the dose. `100UI/ML (3.5MG/ML)` keyed as `100MG/ML` was
+   a real output of the first implementation.
+2. A **space between the number and the unit is not significant.** `10 UI/ML`
+   and `10UI/ML` are the same; `40 MG/0.8ML` is `50MG/ML`. The first
+   implementation matched the unit against the raw remainder of the string
+   with no `\s*` tolerance, so every spaced value silently lost its unit.
+3. The **unit is mandatory.** If no unit is found, return `None`. A bare
+   number is not a dose identity: it is why `0,25 µg`, `0.25 MG/ML` and
+   `0.5 ML` all collided on `0.25` and `0.5`.
+4. **Never convert between units that are not dimensionally safe.** `G`→`MG`
+   and `µG`→`MG` are exact. `UI`→`MG` is *substance-specific* — for insulin
+   1 UI ≈ 0.034 mg, for others it differs — so UI is carried as its own
+   dimension and never converted. Percentage stays percentage; it is not
+   interchangeable with a mass fraction without knowing the basis.
+5. Reduce a ratio by dividing (`40 MG/0.8ML` → `50MG/ML`) so ratio and
+   concentration forms meet on one key.
+6. Return `None` for a **multi-ingredient** strength — one containing a `+`
+   between strengths, or a `COMPARTIMENT A / B` structure. Check this against
+   the observed rows before applying it, so a harmless `+` does not
+   over-trigger.
+
+Decimal comma becomes a period — 1025 rows, not an edge case. Return `None`
+when no number is found, and let the caller treat that as *unknown*, which is
+different from *mismatched*.
 
 `dci_keys`, in order: fold; if the string contains `EXPRIME EN`, take only
 what follows it as the substance; else if it contains a parenthesised group,
@@ -283,7 +367,7 @@ error.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_normalize.py -v`
-Expected: 10 passed
+Expected: 16 passed
 
 - [ ] **Step 5: Write `dz-generics/scripts/profile_source.py` and run it against the real file**
 
@@ -304,13 +388,23 @@ Then run it:
 python dz-generics/scripts/profile_source.py data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx
 ```
 
-Expected: `unparsed dosages: 22` — the rows whose `DOSAGE` genuinely contains
-no digit at all (19 blanks plus `n`, `---`, `q.s pour un flacon`). **Not
-zero.** A `q.s` row is quantum satis, an amount determined at dispensing
-time; it has no number to extract, and `None` is the correct answer for it.
-`None` means *unknown dosage*, which is different from *mismatched dosage*
-and must stay that way all the way to the answer. Anything above ~25 means
-`dose_key` is failing on rows that do have a number, and that is a real bug.
+Expected: **`unparsed dosages` is now expected to be a few hundred, not 22.**
+The 22 rows with no digit are the floor, not the target — every row whose
+dimension cannot be determined is correctly `None` too, and under these rules
+that is every dosage written as a bare number (`0.02`, `0.1`, `0.05`, 217
+rows) plus every multi-ingredient row. Expect roughly 240–280. A return to
+22, or a zero, means the unit is being dropped again.
+
+**The gate is not the count — it is the shape:**
+
+- **Zero** dose keys may be dimensionless. If `profile_source.py` reports any
+  key made only of digits and dots, the unit was dropped somewhere.
+- **Zero** keys may gather together raw strings of different dimensions. The
+  probe in `.superpowers/sdd/2026-09-28-dz-generics-skill/probe_task2.py`
+  prints exactly this; re-run it and read the "dimensionless keys with >1 raw"
+  line, which must be 0.
+- `None` means *unknown dosage*, different from *mismatched dosage*, and must
+  stay that way all the way to the answer.
 
 **Gate:** `NON_SPECIFIE` must be under 5% of rows — the literal `FORME`
 placeholder is only 2 rows in 9595, so this passes easily, and the gate
