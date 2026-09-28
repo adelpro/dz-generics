@@ -288,10 +288,12 @@ Expected: 10 passed
 Unit tests only prove the normalizer handles the cases you already thought
 of. This script is how you find the ones you did not — and it is the tool to
 re-run whenever the ministry changes a column, so it ships as a real
-artifact rather than a throwaway command. It reads the main sheet, skips to
-row 17, and prints: row count, a descending frequency count of `form_key`,
-how many dosages `dose_key` returned `None` for, and the 25 most common raw
-`FORME` strings. Give it a `main()`, an `argparse` path argument, and a
+artifact rather than a throwaway command. It reads the main sheet, skips to row 17, and prints: row count, a descending
+frequency count of `form_key`, how many dosages `dose_key` returned `None`
+for **together with the raw values of those rows**, and the full descending
+distribution of raw `FORME` strings — not just the top 25, because
+`FORM_CANON` is built from it and a truncated tail means unmapped forms.
+Give it a `main()`, an `argparse` path argument, and an
 `if __name__ == "__main__":` guard.
 
 Then run it:
@@ -300,13 +302,18 @@ Then run it:
 python dz-generics/scripts/profile_source.py data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx
 ```
 
-Expected: `unparsed dosages: 0`, and `NON_SPECIFIE` under 5% of rows.
+Expected: `unparsed dosages: 22` — the rows whose `DOSAGE` genuinely contains
+no digit at all (19 blanks plus `n`, `---`, `q.s pour un flacon`). **Not
+zero.** A `q.s` row is quantum satis, an amount determined at dispensing
+time; it has no number to extract, and `None` is the correct answer for it.
+`None` means *unknown dosage*, which is different from *mismatched dosage*
+and must stay that way all the way to the answer. Anything above ~25 means
+`dose_key` is failing on rows that do have a number, and that is a real bug.
 
-**Gate:** if `NON_SPECIFIE` is 5% or more, the `FORME` placeholder is common
-enough that Step 3's `FORM_CANON` is missing real values. Go back, extend it,
-and comment the `FORM_CANON` dict with which observed values map to
-`NON_SPECIFIE` and why. Do not proceed to Task 3 with an unexplained gap —
-Task 3 writes these keys into the index and Task 4 reports on them.
+**Gate:** `NON_SPECIFIE` must be under 5% of rows — the literal `FORME`
+placeholder is only 2 rows in 9595, so this passes easily, and the gate
+exists to catch a *different* form value going missing. Also confirm the raw
+FORME list contains nothing you would be embarrassed to leave unmapped.
 
 - [ ] **Step 6: Commit**
 
@@ -463,7 +470,10 @@ python dz-generics/scripts/build_index.py data/source/NOMENCLATURE.VERSION.AOUT_
 ```
 
 Expected output: a row count near 9595, `withdrawn` near 2679,
-`not_renewed` near 1491, and `unparsed_doses 0`.
+`not_renewed` near 1491, and an `unparsed_doses` count of roughly 22 — the
+rows with no digit in `DOSAGE`, carried through as *unknown*. It is not
+expected to be zero, and a zero would mean `dose_key` is inventing numbers
+out of `q.s` rows.
 
 - [ ] **Step 6: Commit**
 
