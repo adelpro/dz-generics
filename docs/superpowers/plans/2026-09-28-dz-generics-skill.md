@@ -780,9 +780,10 @@ which is precisely the error this whole layer exists to prevent. `None` means
 *unknown*, never *equal*.
 
 Consequently: **if the anchor's `dose_key` is `None`, `equivalents` is empty.**
-Equivalence is undefined without a dosage, so those rows go to `other_forms`
-or `inactive` and the answer says the dose is not comparable. A test must pin
-this, because the failure mode is silent and reads as a confident answer.
+Equivalence is undefined without a dosage, so such rows go to `unknown_dose`,
+which is its own bucket precisely so the answer can say the dose is not
+comparable instead of implying a difference. A test must pin this, because the
+failure mode is silent and reads as a confident answer.
 
 For `DOLIPRANE` the rule yields the `COMPRIME` / `1000MG` tablet, whose raw
 form in the file is the misspelling `COMRPIME` — a useful confirmation that
@@ -790,29 +791,55 @@ form in the file is the misspelling `COMRPIME` — a useful confirmation that
 active paracetamol 1000 mg tablets: `ANTALGAN`, `DOLI-BIEN`, `DOLIPRANE`,
 `DOLYC`, `EXPANDOL`, `PARACETAMOL PHYSIOPHARM`, `ROSADOL`.
 
-Then group every product sharing the anchor's `dci_base_key` into five buckets
-by `(form_key, dose_key)` and `availability`:
+Then group every product sharing the anchor's `dci_base_key` into five buckets.
+**Form and dose relative to the anchor decide the bucket; availability decides
+where a same-form-same-dose row goes, and is otherwise shown inline on each
+row so an off-market product is never hidden.**
 
 | bucket | contents | rendered as |
 |---|---|---|
-| `equivalents` | same form, same dose, `active` | the answer |
-| `other_dosages` | same form, a **different known** dose, `active` | not equivalent — different strength |
-| `unknown_dose` | same form, `dose_key IS NULL`, `active` | dosage not comparable — **not** evidence of a difference |
+| `equivalents` | same form, same **known** dose, `active` | the answer |
+| `inactive` | same form, **same** dose as the anchor, but not `active` | the same product, off-market |
+| `other_dosages` | same form, a **different known** dose | not equivalent — different strength |
+| `unknown_dose` | same form, `dose_key IS NULL` | dosage not comparable — **not** evidence of a difference |
 | `other_forms` | a different `form_key` | not equivalent — different form |
-| `inactive` | any `availability` other than `active` | off-market |
 
-`--include-inactive` folds `inactive` back into `equivalents` for the rare user
-who wants the full historical picture, and says so in the output.
+Verified against the index:
+
+```
+DOLIPRANE  anchor COMPRIME/1000MG active
+           equivalents 7 · inactive 2 · other_dosages 32
+           unknown_dose 0 · other_forms 151
+POLARAMINE anchor SIROP/0.1MG/ML withdrawn (no active row exists)
+           equivalents 0 · inactive 2 · other_dosages 0
+           unknown_dose 0 · other_forms 10
+```
+
+Note that `other_dosages` and `other_forms` legitimately contain off-market
+rows — they are "related but not equivalent", and each row prints its own
+`[withdrawn]` / `[not renewed]` marker. Only `equivalents` needs to be
+active-only, because only `equivalents` is a claim of interchangeability.
+`inactive` is the exception that makes this readable: it is the off-market twin
+of the anchor's own product, which is the thing a reader most needs to see next
+to the equivalents.
+
+`--include-inactive` folds `inactive` into `equivalents` for the rare user who
+wants the full historical picture, and says so in the output. It is about
+availability only — it must never move an unknown dose into `equivalents`.
+
+**Invariants to hold, and to test:** `equivalents` and `other_dosages` never
+contain a null dose; `unknown_dose` contains only null doses; and a null dose
+never reaches `equivalents` by any path, including `--include-inactive`.
 
 **`unknown_dose` is a separate bucket for a reason.** An earlier draft put
 these rows in `other_dosages`, which renders as "different dose — NOT
 equivalent". That asserts a dosage difference the data does not support: the
 dose is *unknown*, not *different*. It affects 776 of 6568 brands (about 12%)
 — for example `ACICLOSINA` is a `POMMADE_OPHTALMIQUE` at 3%, and four
-same-form rows with no determinable dose would be listed as different
-strengths. The error is on the safe side (it under-claims rather than
-fabricating an equivalence) but it is still a false statement about a
-medicine. `None` means unknown, and unknown is its own category.
+same-form rows with no determinable dose were listed as different strengths.
+The error is on the safe side (it under-claims rather than fabricating an
+equivalence) but it is still a false statement about a medicine. `None` means
+unknown, and unknown is its own category.
 
 **A blank `dci_base_key` is not a class.** Three rows in the index have one —
 `KINADYN MG` (magnesium carbonate), `MAGNESIUM SULFATE` and `ISOCLOPRAMID`
