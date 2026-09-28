@@ -474,10 +474,13 @@ off-market rather than just that it is.
 
 ```python
 def test_build_reads_real_workbook(tmp_path):
+    """Exact, not 'roughly': a truncated sheet must fail this, and the three
+    sheets sum to 9595 (5425 + 1491 + 2679)."""
     from build_index import build
     out = tmp_path / "n.sqlite"
     stats = build(SOURCE_XLSX, str(out))
-    assert stats["row_count"] > 9000
+    assert stats["row_count"] == 9595
+    assert stats["version_label"] == "Ao\u00fbt 2026"
     assert out.exists()
 
 
@@ -550,9 +553,26 @@ the file contains `'RE '`, `' RE'`, `'I '` and a lowercase `'i'`. Store `type`
 verbatim otherwise: `BIO` is its own value, and a blank stays blank rather
 than becoming `GE`.
 
-Cross-check the data row count against the number declared in each sheet's
-own title row (5425 / 1491 / 2679) and raise `BuildError` on a mismatch. It
-is the cheapest way to catch a silently-misparsed sheet.
+Insert every data row that has any content, not only rows with a brand: the
+main sheet has 5425 data rows and one of them carries no `FORME`, which is
+still a product. Emptying the brand column is not a filter condition.
+
+Cross-check each sheet's parsed row count against the number the sheet
+declares for itself, and raise `BuildError` on a mismatch. The declaration is
+real and parseable — it sits in the title row above the header, as
+`( N DE )`:
+
+```
+r12: NOMENCLATURE NATIONALE DES PRODUITS ... AU 31 AOUT 2026  ( 5425 DE )
+r9:  LISTE DES PRODUITS ... QUI N'ONT PAS FAIT L'OBJET DE RENOUVELLEMENT ... ( 1491 DE )
+r9:  LISTE DES PRODUITS ... FAISANT L'OBJET DE RETRAIT ... ( 2679 DE )
+```
+
+Match it with `\(\s*(\d+)\s+DE\s*\)` against the rows above the header, and
+take the last numeric declaration found. This is the cheapest way to catch a
+silently-misparsed sheet, and it is the only check that fires when a future
+release moves the header row or drops a column in a way `find_header` still
+tolerates. It is also the check whose absence lets a truncated index ship.
 
 Write `version_label` parsed from the main sheet name — `Nomenclature Aout 2026`
 → `Août 2026` — via a small French-to-UTF-8 month map, never from the
@@ -571,11 +591,24 @@ Expected: 4 passed
 python dz-generics/scripts/build_index.py data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx
 ```
 
-Expected output: a row count near 9595, `withdrawn` near 2679,
-`not_renewed` near 1491, and an `unparsed_doses` count of roughly 22 — the
-rows with no digit in `DOSAGE`, carried through as *unknown*. It is not
-expected to be zero, and a zero would mean `dose_key` is inventing numbers
-out of `q.s` rows.
+Expected output, all verified against the real file beforehand:
+
+| figure | expected |
+|---|---|
+| `row_count` | **9595** — exactly 5425 + 1491 + 2679 |
+| `active` | 5425 |
+| `not_renewed` | 1491 |
+| `withdrawn` | 2679 |
+| `unparsed_doses` | **810** — 416 main + 150 not-renewed + 244 withdrawn |
+
+`unparsed_doses` counts rows whose `DOSAGE` has no determinable dimension, and
+they are carried through as *unknown*. It is **not** zero, and zero would be a
+bug: it would mean `dose_key` is inventing numbers out of `q.s` rows. An
+earlier draft of this plan said "roughly 22", which was the pre-fix figure
+before the mandatory-unit rule landed; 810 is the current, correct value.
+
+`meta` must record `row_count` and `unparsed_doses` **across all three
+sheets**, since all three are indexed.
 
 - [ ] **Step 6: Commit**
 
