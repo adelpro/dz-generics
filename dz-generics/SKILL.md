@@ -46,7 +46,7 @@ python scripts/lookup.py --name "PARACETAMOL" --json      # full structured outp
 2. The **Anchor** block names the product the tool chose: brand, DCI, form,
    dosage, its own status (`active` / `not renewed` / `withdrawn`), origin
    (`made in Algeria` / `imported`), type, and registration number.
-3. Then four sections, and their difference is the whole safety story:
+3. Then five sections, and their difference is the whole safety story:
    - **EQUIVALENTS** — same DCI, same form, same dose. The only genuinely
      equivalent class.
    - **Other dosages** — same form, *different* dose. **Not equivalent.**
@@ -57,7 +57,10 @@ python scripts/lookup.py --name "PARACETAMOL" --json      # full structured outp
    - **Off-market** — withdrawn or not renewed at the anchor's form and dose.
      **Not available. Do not present as an option.**
 4. Each line carries the laboratory, `made in Algeria` or `imported`, and the
-   type `GE` (generic), `RE` (reference), or `BIO` (biologic).
+   type `GE` (generic), `RE` (reference), or `BIO` (biologic). An off-market row
+   is marked `[withdrawn]` or `[not renewed]` **wherever it appears**, in every
+   section; a line with no marker is an active one. Never drop the marker when
+   you reformat a line.
 ### If the user named a particular dose or form
 
 The tool picks its own anchor (lowest active known dose). If the user asked for
@@ -70,14 +73,21 @@ different-form row into the equivalent list. Details in
 ## Answer format
 
 1. State the version label and the anchor's DCI, form and dosage.
-2. List the equivalents **grouped by laboratory**, each with made-in-Algeria vs
-   imported and its type.
-3. Keep the three "not equivalent" reasons separate and named: **different
+2. **Check the anchor's own status first.** If it is `withdrawn` or
+   `not renewed`, lead with that: the brand is not obtainable, never present it
+   as available, and never label another brand's products as its "generics".
+   You may then present the **active** class of the same DCI/form/dose,
+   explicitly as *the substance's* class.
+3. If the anchor is active, list the equivalents **grouped by laboratory**, each
+   with made-in-Algeria vs imported and its type.
+4. Keep the three "not equivalent" reasons separate and named: **different
    dose**, **different form**, **unknown dose**. Never collapse them and never
    present an unknown dose as a difference.
-4. Off-market products go in their own clearly labelled block, with `withdrawn`
-   or `not renewed` shown, and are never offered as an alternative.
-5. Close with the disclaimer sentence below.
+5. Off-market products go in their own clearly labelled block, with `withdrawn`
+   or `not renewed` shown, and are never offered as an alternative. Keep the
+   `[withdrawn]` / `[not renewed]` marker on **any** off-market row you list,
+   whatever section it came from.
+6. Close with the disclaimer sentence below.
 ## Language
 
 Mirror the user's language: French query, French answer; Arabic, Arabic;
@@ -106,5 +116,5 @@ PARACETAMOL), then run the tool.
 - [references/answering.md](references/answering.md) — worked examples (FR, AR,
   EN) and the phrasing/trigger table.
 - [references/schema.md](references/schema.md) — the verified source schema.
-- `scripts/build_index.py` — rebuild `data/nomenclature.sqlite` after a
-  ministry refresh; `scripts/fetch_source.py` downloads the source workbook.
+- `scripts/build_index.py` — rebuild the index after a ministry refresh;
+  `scripts/fetch_source.py` downloads the source workbook.

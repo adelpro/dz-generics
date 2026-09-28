@@ -55,6 +55,25 @@ To answer for a specific form and dose:
 4. If no row at that form and dose exists, say so — do not answer for a nearby
    one.
 
+## The anchor's own status governs the answer
+
+Look at the anchor's `status` **before** you present any class. It decides the
+shape of the answer, not just a footnote:
+
+- **The anchor is `active`.** Present the equivalent class normally, and put any
+  off-market rows in their own clearly labelled block.
+- **The anchor is `not renewed` or `withdrawn`.** The brand the user asked about
+  is **not obtainable**. Lead with that, do not present the brand as available,
+  and do not offer the off-market rows as options. You may then present the
+  **active** class of the same DCI/form/dose — but label it as *the substance's*
+  class, **not** as "the generics of «brand»". The registry answers by DCI; the
+  brand is not the substance.
+
+This is the same rule in every language, and it is what makes the Tylenol and
+the Doliprane 500 answers below read the same way: both brands are off-market,
+so both answers say so first, neither offers the brand, and both may then name
+the active class of the substance explicitly under the substance's name.
+
 ---
 
 ## Worked example — French (brand + dose)
@@ -70,6 +89,12 @@ Commands: `--name "DOLIPRANE" --json` (shows the 500 mg row), then
 Nomenclature nationale — version **Août 2026**.
 
 Substance active (DCI) : **PARACETAMOL**. Forme : comprimé. Dosage : **500 mg**.
+
+⚠️ Le **Doliprane 500 mg** lui-même est **hors marché** (référence, SANOFI
+AVENTIS SPA — enregistrement non renouvelé). Il n'est donc pas disponible, et
+je ne le présente pas comme une option. Ce qui suit est la classe de la
+**substance PARACETAMOL** en comprimé 500 mg — ce ne sont pas « les génériques
+du Doliprane ».
 
 Équivalents enregistrés — même DCI, même forme, même dosage :
 
@@ -89,16 +114,15 @@ exemple DOLIPRANE, DOLI-BIEN, DOLYC, ROSADOL (liste complète avec `--json`).
 Autres formes — **NON équivalentes** : sirop, suspension buvable, suppositoire,
 sachet.
 
-Hors marché — à ne pas présenter comme disponible : **DOLIPRANE 500 mg**
-(référence, SANOFI AVENTIS SPA) — enregistrement non renouvelé.
-
 L'équivalence signifie ici même DCI, même forme et même dosage. Ce n'est pas une
 preuve de bioéquivalence, et la substitution relève de la décision du pharmacien
 ou du prescripteur.
 
-**What the example shows:** the requested 500 mg row is answered from a
-500 mg anchor; 1000 mg is named and explicitly *not* equivalent; the branded
-Doliprane 500 itself is off-market and is surfaced as such, never as an option.
+**What the example shows:** the queried brand, Doliprane 500, is off-market, so
+the answer leads with that and never offers it; the requested 500 mg class is
+then presented on a 500 mg anchor, **explicitly as the substance's class, not as
+"les génériques du Doliprane"** (exactly as the Tylenol example below does); and
+1000 mg is named and explicitly *not* equivalent.
 
 ---
 
@@ -107,38 +131,58 @@ Doliprane 500 itself is off-market and is surfaced as such, never as an option.
 > **المستخدم:** أريد قائمة البدائل المتوفرة في الجزائر للباراسيتامول على شكل
 > شراب، مع ذكر المختبرات المصنعة.
 
-Commands: `--dci "PARACETAMOL"` (whole substance), then
-`--code "03 B 117"` (suspension buvable, 24 mg/ml) and
-`--code "03 B 061"` (solution buvable, dose non déterminable).
+Commands: `--dci "PARACETAMOL"` (whole substance), `--name "TYLENOL"` (the
+`SIROP` the user actually named), then `--code "03 B 117"` (suspension buvable,
+24 mg/ml). The `SIROP` form has **no active row** — both its rows are off-market
+(TYLENOL 3% *not renewed*, PARACETAMOL ELEXIR SAD 120 mg *withdrawn*) — so the
+answer names the nearest **active** oral-liquid form, `SUSPENSION BUVABLE`
+24 mg/ml, and answers for that explicitly.
 
 **الجواب**
 
 التسمية الوطنية للمنتجات الصيدلانية — نسخة **أوت 2026**.
 
-المادة الفعالة: **PARACETAMOL** (الباراسيتامول). الشكل الدوائي: سائل للشرب.
+المادة الفعالة: **PARACETAMOL** (الباراسيتامول).
 
-البدائل المسجَّلة في الجزائر — نفس الشكل ونفس الجرعة (24 ملغ/مل، معلّق للشرب):
+**الشكل الذي طلبته — الشراب (SIROP) — لا توجد له أي تسجيلة سارية**: سطران
+فقط، وكلاهما خارج السوق — **TYLENOL** 3% (150 مغ/5 مل) لم تُجدَّد تسجيلته،
+و**PARACETAMOL ELEXIR SAD** 120 مغ مسحوب. لا يُعرض أيٌّ منهما كبديل متوفر.
 
-- **DOLIBON** — GE — مصنّع في الجزائر — GEOPHARM
-- **DOLIPRANE 2,4%** — GE — مصنّع في الجزائر — PROPHARMAL
-- **DOLYMEX** — GE — مصنّع في الجزائر — KPMA BIOTIC
-- **MIGRAMOL PEDIATRIQUE** — GE — مصنّع في الجزائر — LAD PHARMA
-- **PARALGAN** — GE — مصنّع في الجزائر — GROUPE SAIDAL
+أقرب شكل سائل للشرب مسجَّل وساري هو **المعلّق للشرب (SUSPENSION BUVABLE)
+120 مغ/5 مل (2,4 غ/100 مل)، أي 24 ملغ/مل**، وكلّه مصنَّع في الجزائر:
 
-جرعات مختلفة — **غير مكافئة**: 50 ملغ/مل (DOLOMOL)، 25 ملغ/مل (TYLENOL JEUNE
-ENFANT).
+- **DOLIBON** — GE — GEOPHARM
+- **DOLIPRANE 2,4%** — GE — PROPHARMAL
+- **DOLYMEX** — GE — KPMA BIOTIC
+- **MIGRAMOL PEDIATRIQUE** — GE — LAD PHARMA
+- **PARALGAN** — GE — GROUPE SAIDAL
 
-جرعة غير محدَّدة — **لا تُقارَن، وليست دليلًا على اختلاف** (محاليل للشرب بدون
-جرعة قابلة للتحديد): ACETADOL، DOLI-BIEN، DOLPRIV، EFFERALGAN PEDIATRIQUE،
-ISOMOL، PEDIAMOL. لا تُقدَّم كبدائل مكافئة، ولا تُقدَّم كجرعة مختلفة.
+⚠️ هذه أسماء فئة المادة **PARACETAMOL** في شكل المعلّق للشرب، وليست «بدائل
+TYLENOL»؛ فعلامة TYLENOL نفسها خارج السوق.
+
+جرعات مختلفة في نفس الشكل — **غير مكافئة**: **DOLOMOL** 50 ملغ/مل (لم تُجدَّد
+تسجيلته)، و**TYLENOL JEUNE ENFANT GOÛT BANANE** 25 ملغ/مل (مسحوب).
+
+⚠️ لا توجد أي جرعة «غير محدَّدة» في شكل **المعلّق للشرب**: هذا القسم فارغ هنا،
+فلا يُستشهد بأحد. أما **المحلول للشرب (SOLUTION BUVABLE)** — وهو شكل *مختلف*،
+لا بديل — فيحمل سبعة أسطر بجرعة غير قابلة للتحديد (ACETADOL، DOLI-BIEN،
+DOLPRIV، EFFERALGAN PEDIATRIQUE، ISOMOL، PEDIAMOL) وسطرًا واحدًا بجرعة
+*معروفة* (ISOMOL 20 ملغ/مل، ساري)، لذا لا تُقارَن جرعاته بجرعات المعلّق.
+الجرعة المجهولة ليست جرعة مختلفة.
 
 يعني التكافؤ هنا تطابق المادة الفعالة والشكل الصيدلاني والجرعة. وهو ليس إثباتًا
 للتكافؤ الحيوي، ويبقى قرار الاستبدال بيد الصيدلي أو الطبيب الواصف.
 
-**What the example shows:** the answer is in Arabic while the names stay Latin;
-the exact `SIROP` form has no active rows, so the agent says which oral-liquid
-form it answered for instead of silently stretching "شراب"; and the unknown-dose
-group is its **own** section — neither equivalent nor "different dose".
+**What the example shows:** the answer stays in Arabic while names stay Latin;
+the exact form the user named (`SIROP`) has **no active registration**, so the
+answer says that first instead of silently stretching «شراب» to cover another
+form; it then answers for `SUSPENSION BUVABLE` 24 mg/ml as the *substance's*
+registered class, explicitly not as "alternatives to Tylenol". The
+`SOLUTION BUVABLE` nuance is stated because the tool treats it as a **different
+form** — that form holds both unknown-dose rows and one known-dose row
+(ISOMOL 20 mg/ml) — so lumping it in with the suspension would assert a
+comparison the data does not support. The different-dose rows are named and
+their off-market status is shown.
 
 ---
 
@@ -163,15 +207,17 @@ way.
 
 `--name "TYLENOL"` returns TYLENOL 3% syrup, **not renewed** — in the registry,
 but off-market. **Answer:** Tylenol is in the nomenclature but its registration
-was not renewed, so it is not presented as available. Its active substance is
-paracetamol (PARACETAMOL); the Algerian registry lists products by DCI, so I can
-look up paracetamol products — but those are not "Tylenol generics" and I will
-not label them that way. Then the disclaimer.
+was not renewed, so it is not available and I do not present it as an option.
+Its active substance is paracetamol (PARACETAMOL); the Algerian registry lists
+products by DCI, so I can show you the **registered paracetamol** products — but
+these are the substance's class, not "Tylenol generics", and I will not label
+them that way. Then the disclaimer.
 
-**What the example shows:** a miss produces an honest "not found" with no
-invented product; and a foreign brand that *is* listed but off-market is
-reported as off-market, not as available and not silently swapped for another
-brand's products.
+**What the example shows:** the same rule as the Doliprane 500 answer above —
+the queried brand is off-market, so the answer leads with that, never offers the
+brand, and may then name the active class **as the substance's class, explicitly
+not as the brand's generics**. The first question shows a miss producing an
+honest "not found" with no invented product.
 
 ---
 
@@ -187,3 +233,9 @@ brand's products.
   difference.
 - Never present a withdrawn or not-renewed row as an option, even when it is the
   only row for a substance.
+- **Label what is sourced and what is not.** Every product, laboratory and
+  registration detail must come from the registry. When you add something the
+  registry does not hold — for example, that a foreign brand not listed in
+  Algeria (Nurofen) contains ibuprofen — say plainly that the **substance
+  mapping is general knowledge** while **the products come from the registry**.
+  The reader must be able to tell which part is sourced and which is not.
