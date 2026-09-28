@@ -647,14 +647,19 @@ git commit -m "feat: build SQLite index from ministry nomenclature"
 
 ```python
 def test_paracetamol_tablet_lookup_finds_generics():
-    """The headline use case, end to end against the real index."""
+    """The headline use case, end to end against the real index.
+    DOLIPRANE anchors on the COMPRIME 1000MG tablet (`COMRPIME` in the file),
+    whose equivalence class holds 7 active products in this release."""
     from lookup import lookup
     res = lookup(name="doliprane")
     assert res.query == "doliprane"
     assert res.status == "found"
     assert res.dci_base_key is not None
+    assert res.anchor.form_key == "COMPRIME"
     assert len(res.equivalents) > 1
     assert all(p.form_key == "COMPRIME" for p in res.equivalents)
+    # The anchor is a member of its own equivalence class.
+    assert any(p.brand_key == "DOLIPRANE" for p in res.equivalents)
 
 
 def test_different_dosage_is_not_an_equivalent():
@@ -671,12 +676,26 @@ def test_unknown_name_returns_no_match_not_a_guess():
     assert res.candidates == []
 
 
-def test_close_but_wrong_name_returns_candidates_not_a_pick():
+def test_fuzzy_match_lists_candidates_and_never_picks():
+    """Never auto-pick. 'DOLIPRAN' scores 0.941 against DOLIPRANE and is the
+    only brand above the 0.85 cutoff -- and even a single fuzzy candidate must
+    not be silently chosen, because the user typed something else."""
+    from lookup import lookup
+    res = lookup(name="dolipran")
+    assert res.status == "ambiguous"
+    assert res.candidates
+    assert all(c.brand_key == "DOLIPRANE" for c in res.candidates)
+
+
+def test_a_typo_below_the_cutoff_is_not_a_match_at_all():
+    """The other side of the cutoff. 'DOLIPRNA' scores 0.824 against DOLIPRANE,
+    under 0.85, and finds nothing -- it must not be widened into a guess.
+    The plan originally used 'doliprna' as the near-miss and expected a match;
+    that was wrong, and this pair pins both sides of the boundary."""
     from lookup import lookup
     res = lookup(name="doliprna")
-    assert res.status == "ambiguous" or res.status == "found"
-    if res.status == "ambiguous":
-        assert len(res.candidates) >= 1
+    assert res.status == "not_found"
+    assert res.candidates == []
 
 
 def test_json_output_round_trips():
@@ -701,21 +720,43 @@ is `ambiguous` and the script prints candidates without picking one. The
 source file misspells the same substance several ways, so a miss must report
 `not_found` rather than widen the net.
 
-Pick the **anchor**: the best match for the query, preferring an exact brand
-hit. Group every product sharing the anchor's `dci_base_key` into four
-buckets by `(form_key, dose_key)` and `availability`: `equivalents` (same
-form, same dose, `active`), `other_dosages`, `other_forms`, and `inactive`
-(everything whose `availability` is not `active`). `--include-inactive`
-folds `inactive` back into `equivalents` for the rare user who wants the
-full historical picture, and says so in the output.
+Pick the **anchor**. A brand is not one product — `DOLIPRANE` is twelve rows
+across tablets, suppositories and sachets — so the rule has to be pinned or
+the answer is arbitrary. Verified against the index:
 
-**The anchor itself may be off-market.** `POLARAMINE` is only in the
-not-renewed list, so a lookup for it resolves fine but the anchor is not
-something you can buy. Surface the anchor's own `availability` first, and
-carry `withdrawn_reason` through for withdrawn records — "retrait par le
-détenteur pour motif commercial" is the difference between a drug that was
-unsafe and one that simply stopped selling, and the user cannot tell without
-being told.
+1. Consider the rows the query matched.
+2. Prefer rows with `availability = 'active'`. If none are active, use all of
+   them — the anchor is then itself off-market and must be flagged as such.
+3. Among those, take the row whose `(dose_key, form_key)` sorts first
+   lexicographically. This is arbitrary but deterministic, which is what a
+   test needs; every alternative lands in the other buckets anyway.
+
+For `DOLIPRANE` that yields the `COMPRIME` / `1000MG` tablet, whose raw form in
+the file is the misspelling `COMRPIME` — a useful confirmation that `form_key`
+canonicalization is on the path. Its `equivalents` are the **7** active
+paracetamol 1000 mg tablets: `ANTALGAN`, `DOLI-BIEN`, `DOLIPRANE`, `DOLYC`,
+`EXPANDOL`, `PARACETAMOL PHYSIOPHARM`, `ROSADOL`.
+
+Then group every product sharing the anchor's `dci_base_key` into four buckets
+by `(form_key, dose_key)` and `availability`: `equivalents` (same form, same
+dose, `active`), `other_dosages`, `other_forms`, and `inactive` (everything
+whose `availability` is not `active`). `--include-inactive` folds `inactive`
+back into `equivalents` for the rare user who wants the full historical
+picture, and says so in the output.
+
+**The anchor itself may be off-market.** `POLARAMINE` is in **both** the
+not-renewed and the withdrawn lists — 4 rows, 1 and 3 — and has **no active
+row at all**, so its anchor is a withdrawn \`SIROP\` and the answer must lead
+with that rather than presenting anything as available. Carry
+`withdrawn_reason` through for withdrawn records: POLARAMINE's rows carry
+three different ones, and "retrait par le détenteur pour motif commercial" is
+the difference between a drug that was unsafe and one that simply stopped
+selling. The user cannot tell without being told.
+
+Note that a brand can also appear under several registration numbers in the
+*same* form and dose, and the two off-main sheets overlap on 40 registration
+numbers, so availability is not a single value per brand. When the anchor
+matches several rows, say so rather than picking one silently.
 
 Render `statut` as *made in Algeria* (`F`) or *imported* (`I`), never as an
 availability statement, and render `type` as generic-equivalent (`GE`),
@@ -730,7 +771,7 @@ days, print a staleness warning. Use compact aligned text by default and
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_lookup.py -v`
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: Manual spot-check against names a pharmacist would recognize**
 
@@ -741,12 +782,18 @@ python dz-generics/scripts/lookup.py --name "Augmentin"
 python dz-generics/scripts/lookup.py --name "Polaramine"
 ```
 
-Expected: paracetamol and amoxicillin return multiple local laboratories;
-`POLIPRANE` shows its own rows and separates 100 mg suppositories from 500 mg
-tablets rather than merging them; `Augmentin` reports as `RE` with its
-`GE` copies alongside; `Polaramine` resolves — it is not in the main list but
-it is in the nomenclature — and leads with its not-renewed status; a genuinely
-absent name exits 1 with a clear message rather than a guess.
+Expected, against the verified data:
+
+| command | what to verify |
+|---|---|
+| `--name "DOLIPRANE"` | anchor is the `COMPRIME` 1000 mg tablet (`COMRPIME` in the file, canonicalized); **7** active equivalents listed with laboratories, all `made in Algeria` (`F`) |
+| `--dci "PARACETAMOL"` | the same anchor by the DCI route, and that `other_dosages` / `other_forms` separate 500 mg tablets, effervescent and orodispersible forms rather than merging them |
+| `--name "Augmentin"` | resolves to the active `RE` sachet 1000MG/125MG, with **7 `GE` copies** alongside — 6 made locally and `AMOXICILLINE/ACIDE CLAVULANIQUE SANDOZ ADULTE` imported (`I`) |
+| `--name "Polaramine"` | resolves although it is on no active list; leads with its off-market status and carries a withdrawal reason; must present nothing as available |
+| `--name "dolipran"` | `ambiguous` with DOLIPRANE as a candidate, **not** silently resolved |
+| `--name "zzzznotadrug"` | exits 1 with a clear message, no guess |
+
+Then check the rendering rules by eye: `statut` shown as *made in Algeria* / *imported* and never as availability; `type` shown as `GE` / `RE` / `BIO` with any `BIO` row visibly marked; and the version label printed on every invocation.
 
 - [ ] **Step 6: Commit**
 
