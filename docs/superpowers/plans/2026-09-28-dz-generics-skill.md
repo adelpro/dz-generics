@@ -16,7 +16,10 @@
 
 - **Source of truth is the ministry file, nothing else.** Never invent a product, laboratory, or DCI. If a drug is not in the index, say it is not in the nomenclature.
 - **A "generic equivalent" means same DCI (salt-insensitive), same pharmaceutical form, same normalized dosage.** Any other combination is reported separately and explicitly labelled *not equivalent*.
-- **Never auto-pick a brand on fuzzy match.** Ambiguous input lists candidates and stops.
+- **`TYPE` is three-valued — `GE`, `RE`, and `BIO` (biologics, 58 rows).** It is stored verbatim. Never reduce it to a boolean, and never bucket a blank or unrecognised value as `GE`. A biosimilar is not interchangeable with a chemical generic the way a `GE` is, so the distinction has to survive to the answer.
+- **`STATUT` is locally-made vs imported (`F`/`I`), not an availability flag.** It tracks the holder's country at 94.6% / 3.9%. Use it to say *made in Algeria* or *imported from X* — never to decide whether a product is on the market.
+- **Availability comes from which sheet a record was read from**, never from a join and never from `STATUT`. The three sheets are disjoint (main ∩ not-renewed = 0, main ∩ withdrawn = 1), so the index is their union: 5425 active + 1491 not renewed + 2679 withdrawn.
+- **Never auto-pick a brand on fuzzy match.** Ambiguous input lists candidates and stops. The source file misspells the same substance several ways, so an exact-match miss must say "not found" rather than guess.
 - **Every answer states the nomenclature version** (e.g. `Nomenclature Août 2026`) and closes with a note that substitution is the pharmacist's or prescriber's decision, since the nomenclature records no bioequivalence or excipient data.
 - **Withdrawn and not-renewed products are flagged, never presented as available.** A withdrawn product is a safety issue, not a formatting detail.
 - **The index is read-only at query time.** `lookup.py` must never write to the SQLite file.
@@ -27,11 +30,11 @@
 
 These are the five input classes most likely to break this and not yet pinned by any stated requirement. Each gets a test in the owning task.
 
-1. **The same substance written two ways.** The main sheet has `CETIRIZINE DICHLORHYDRATE`; the Retraits sheet has bare `CETIRIZINE`. Salt-suffix stripping must group them, and a match across the two spellings must still show the real DCI string, not a synthesized one.
-2. **Dosage written as a ratio vs a concentration.** `0,5MG/5ML` and `1MG/ML` are the same strength but are different strings; `0,5` uses a decimal comma. A naive string compare silently returns zero generics for syrups — the single most common failure mode.
-3. **Form written as an abbreviation vs the full word.** `COMP.`, `COMP.PELLI.SEC`, `COMPRIME`, `COMPRIME PELLICULE`. Without canonicalization, a paracetamol tablet lookup misses the generic tablets, which is the headline use case.
-4. **The placeholder form `FORME`.** Some rows carry the literal string `FORME` in the form column, meaning unspecified. It must not match every form — that would report a syrup as a tablet equivalent. It gets its own canonical value and a flag.
-5. **A product present in both the main sheet and the Retraits sheet.** Withdrawn wins over not-renewed, and the record still resolves to its DCI so the user learns the drug exists but is off-market.
+1. **The same substance written two ways — and sometimes three.** `CETIRIZINE DICHLORHYDRATE` in the main sheet against bare `CETIRIZINE` in the Retraits sheet. On top of the salt suffix, 181 DCI values state the base substance after a marker (`ACIDE ZOLEDRONIQUE MONOHYDRATE EXPRIME EN ACIDE ZOLEDRONIQUE`), and some use parentheses instead (`AMLODIPINE BESILATE (AMLODIPINE)`). The salt list must be the **French** forms this file prefers — `SODIQUE` (31 rows) and `ANHYDRE` (26) are the two largest gaps in the English list. Grouping must work, and a match must still show the real DCI string, never a synthesized one.
+2. **Dosage written as a ratio vs a concentration.** `0,5MG/5ML` and `1MG/ML` are the same strength but are different strings; 1025 rows use a decimal **comma**, which a naive float parse reads as `0`. A string compare silently returns zero generics for syrups — the single most common failure mode. 22 rows carry no digit at all (`q.s pour un flacon`, `---`, `n`); `dose_key` returns `None` and that must read as *unknown*, never as a mismatch.
+3. **Form written as an abbreviation vs the full word.** 683 distinct raw values over 5425 rows, including misspellings (`COMRPIME`, `COMRIME`) and values that are not forms at all (`FLACON`, `LAIT EN POUDRE`, `---`). Without canonicalization, a paracetamol tablet lookup misses the generic tablets, which is the headline use case.
+4. **The placeholder form `FORME`.** Two rows in 9595 carry the literal string `FORME` in the form column, meaning unspecified. It must not match every form — that would report a syrup as a tablet equivalent. It gets its own canonical value and a flag. It is rare enough that a 5% threshold gate passes trivially; the gate exists to catch a *different* value going missing, not this one.
+5. **A product that is only in the withdrawn or not-renewed list.** `POLARAMINE` appears nowhere in the main sheet, only in `Non Renouvelés `. A build that reads only the main list reports it as "not in the nomenclature" when it is really off-market for a different reason — and the user cannot learn why. Availability must come from the source sheet, and the withdrawal reason should be carried through so the answer can say *why*.
 
 ---
 
@@ -59,18 +62,22 @@ directory alone, so no test file ever reaches `~/.config/opencode/skills/`.
 
 ---
 
-## Phase 0 — Ground Truth (done during planning; re-verify in Task 1)
+## Phase 0 — Ground Truth (verified in Task 1)
 
-Already established against the live file, so tasks do not re-discover it:
+Task 1 inspected the live file and wrote the full result to
+`dz-generics/references/schema.md`. **That file, not this section, is the
+authority on the source layout** — read it before touching `build_index.py`.
+The short version:
 
 - Source page: `https://www.miph.gov.dz/fr/nomenclature-nationale-des-produits-pharmaceutiques/`
-- Current file: `https://www.miph.gov.dz/fr/wp-content/uploads/2026/09/clean_NOMENCLATURE.VERSION.AOUT_.2026-.xlsx` (1,252,820 bytes)
-- Downloaded to `data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx`
-- Sheets: `Nomenclature Aout 2026` (5441 rows, header row 16, data from 17), `Non Renouvelés ` (1503 rows, header row 12 — **trailing space in the name**), `Retraits` (2690 rows, header row 11)
-- Main sheet declares 36 columns but names only ~20. Columns are **not** contiguous — the build must match by header text, never by index.
-- `TYPE` holds `GE` / `RE`. `STATUT` holds `F` / `I`. Their exact meanings are **not yet confirmed** and Task 2 settles it from the data.
-
-Filename patterns are inconsistent across releases (`clean_` prefix appears and disappears; upload month does not match version month). The version label must come from the **sheet name**, which is stable, not the filename.
+- Current file: `.../2026/09/clean_NOMENCLATURE.VERSION.AOUT_.2026-.xlsx` (1,252,820 bytes)
+- `data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx` — **gitignored**, never redistributed
+- Sheets and data rows: `Nomenclature Aout 2026` 5425, `Non Renouvelés ` 1491 (**trailing space in the name**), `Retraits` 2679. 9595 total.
+- Header rows are 16 / 12 / 11 — each sheet has an institutional banner above it, and its title row states its own row count, which makes a free integrity check.
+- Main sheet declares 36 columns and fills 19. **`Retraits` has a different layout from the other two** — no `OBS`, no `DATE D'ENREGISTREMENT FINAL`, two extra columns, and `TYPE`/`STATUT` two positions to the left. Resolve columns by name, per sheet.
+- `TYPE` = `GE` / `RE` / `BIO`. `STATUT` = `F` (locally made) / `I` (imported).
+- **The three sheets are disjoint** (main ∩ not-renewed = 0, main ∩ withdrawn = 1). Availability is a property of the source sheet, not a join result.
+- Filename patterns are inconsistent (`clean_` prefix appears and disappears; upload month ≠ version month). The version label must come from the **sheet name**, which is stable.
 
 ---
 
@@ -207,6 +214,27 @@ def test_dci_keys_group_salt_and_base():
     exact2, base2 = dci_keys("CETIRIZINE")
     assert base == base2
     assert exact != exact2
+
+
+def test_dci_keys_prefer_the_clause_after_exprime_en():
+    """Review Focus #1 again: 181 DCIs state the base substance after a marker."""
+    from normalize import dci_keys
+    _, base = dci_keys("ACIDE ZOLEDRONIQUE MONOHYDRATE EXPRIME EN ACIDE ZOLEDRONIQUE")
+    assert base == dci_keys("ACIDE ZOLEDRONIQUE")[1]
+
+
+def test_dci_keys_use_the_parenthesised_base_when_present():
+    from normalize import dci_keys
+    _, base = dci_keys("AMLODIPINE BESILATE (AMLODIPINE)")
+    assert base == dci_keys("AMLODIPINE")[1]
+
+
+def test_dose_key_returns_none_when_there_is_no_number():
+    """22 rows carry q.s / --- / blanks. None means unknown, not a mismatch."""
+    from normalize import dose_key
+    assert dose_key("q.s pour un flacon") is None
+    assert dose_key("---") is None
+    assert dose_key(None) is None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -218,16 +246,42 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'normalize'`
 
 `fold`: NFKD normalize, drop combining marks, uppercase, replace every non-alphanumeric run with a single space, strip.
 
-`FORM_CANON`: build a dict from the distinct `FORME` values dumped in Task 1 Step 3, mapping each observed abbreviation to a canonical token. It must be derived from observed data, not from a guessed list — add a comment naming the source sheet and row count. Map the literal `FORME` to `NON_SPECIFIE`.
+`FORM_CANON`: build a dict from the distinct `FORME` values listed in
+`references/schema.md`, mapping each observed spelling to a canonical token.
+It must be derived from the observed data — the file has 683 distinct values
+including misspellings and non-forms — not from a guessed list. The full
+distribution is what `profile_source.py` prints, so use that to build it.
+Map the literal `FORME` to `NON_SPECIFIE`, and give non-form values
+(`FLACON`, `---`, `LAIT EN POUDRE`) their own keys rather than collapsing
+them into a form.
 
-`dose_key`: extract number, unit, and optional `/per` amount. Decimal comma becomes a period. A `X per Y` ratio is reduced to a base ratio by dividing, so the key is comparable across ratio and concentration forms. Convert `G`→`MG`, `µG`→`MG` at a factor of 1000, `ML`→ per-mL denominator preserved as a number. Return `None` when no number is found.
+`dose_key`: extract number, unit, and optional `/per` amount. Decimal comma
+becomes a period — this is 1025 rows, not an edge case. A `X per Y` ratio is
+reduced to a base ratio by dividing, so the key is comparable across ratio
+and concentration forms. Convert `G`→`MG`, `µG`→`MG` at a factor of 1000,
+keeping an ML denominator as a number. Return `None` when no number is found,
+and let the caller treat that as *unknown*.
 
-`dci_keys`: fold the DCI, sort its tokens alphabetically into the exact key, then drop salt and hydrate suffixes (DICHLORHYDRATE, CHLORHYDRATE, SULFATE, MALEATE, FUMARATE, MESYLATE, TOSYLATE, SODIUM, POTASSIUM, CALCIUM, TRIHYDRATE, ANHYDROUS) to produce the base key. The suffix list must also be checked against the distinct DCI values from Task 1 Step 3 and extended if the data contains suffixes not listed here.
+`dci_keys`, in order: fold; if the string contains `EXPRIME EN`, take only
+what follows it as the substance; else if it contains a parenthesised group,
+take that; else use the whole string. Then produce the exact key by sorting
+the tokens alphabetically, and the base key by dropping salt/hydrate
+suffixes. **The suffix list must be the French forms this file prefers** —
+the English-only list in an earlier draft of this plan was wrong, and
+`SODIQUE` (31 rows) and `ANHYDRE` (26) are its two largest omissions. The
+observed list, with row counts, is the table in `references/schema.md`:
+CHLORHYDRATE, SODIUM, SODIQUE, MONOSODIQUE, SULFATE, FUMARATE,
+DICHLORHYDRATE, MALEATE, TRIHYDRATE, MONOHYDRATE, DIHYDRATE, ANHYDRE,
+ANHYDROUS, POTASSIUM, POTASSIQUE, CALCIUM, MAGNESIUM, ACETATE, NITRATE,
+BROMURE, CITRATE, PHOSPHATE, MESYLATE, TOSYLATE. Treat an unrecognised
+suffix as part of the substance rather than dropping it — dropping a token
+that is not a salt merges two genuinely different drugs, which is the worse
+error.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_normalize.py -v`
-Expected: 6 passed
+Expected: 10 passed
 
 - [ ] **Step 5: Write `dz-generics/scripts/profile_source.py` and run it against the real file**
 
@@ -288,7 +342,8 @@ CREATE TABLE product (
   lab TEXT, country TEXT,
   date_start TEXT, date_end TEXT,
   type TEXT, statut TEXT, shelf_life TEXT,
-  availability TEXT   -- 'active' | 'not_renewed' | 'withdrawn'
+  availability TEXT,     -- 'active' | 'not_renewed' | 'withdrawn'
+  withdrawn_at TEXT, withdrawn_reason TEXT
 );
 CREATE INDEX idx_brand ON product(brand_key);
 CREATE INDEX idx_dci   ON product(dci_base_key);
@@ -296,7 +351,15 @@ CREATE INDEX idx_code  ON product(code);
 CREATE INDEX idx_reg   ON product(reg_no);
 ```
 
-`meta` keys: `version_label`, `source_url`, `source_filename`, `built_at`, `row_count`, `main_sheet`, `unparsed_doses`.
+The table holds the **union of all three sheets** (9595 rows), not just the
+main list. `reg_no` is not unique — 8 duplicates in the main sheet — so
+`id` is the primary key and `reg_no` is an index only. `withdrawn_at` and
+`withdrawn_reason` come from the `Retraits` sheet, which is the only one
+that has them, and they are the reason a lookup can say *why* a product is
+off-market rather than just that it is.
+
+`meta` keys: `version_label`, `source_url`, `source_filename`, `built_at`,
+`row_count`, `main_sheet`, `unparsed_doses`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -305,7 +368,7 @@ def test_build_reads_real_workbook(tmp_path):
     from build_index import build
     out = tmp_path / "n.sqlite"
     stats = build(SOURCE_XLSX, str(out))
-    assert stats["row_count"] > 5000
+    assert stats["row_count"] > 9000
     assert out.exists()
 
 
@@ -316,15 +379,36 @@ def test_build_fails_loudly_when_row_count_collapses(tmp_path):
         build(SOURCE_XLSX, str(tmp_path / "n.sqlite"), previous_row_count=50000)
 
 
-def test_withdrawn_product_is_flagged(tmp_path):
-    """Review Focus #5."""
+def test_availability_comes_from_the_source_sheet(tmp_path):
+    """Review Focus #5. The three sheets are disjoint, so a join yields
+    nothing and a main-sheet-only build would report POLARAMINE — which sits
+    only in the not-renewed list — as 'not in the nomenclature'."""
+    import sqlite3
+    from build_index import build
+    out = tmp_path / "n.sqlite"
+    stats = build(SOURCE_XLSX, str(out))
+    con = sqlite3.connect(out)
+    counts = dict(con.execute(
+        "SELECT availability, COUNT(*) FROM product GROUP BY availability"))
+    assert counts["withdrawn"] > 2000
+    assert counts["not_renewed"] > 1000
+    assert counts["active"] > 5000
+    polaramine = con.execute(
+        "SELECT availability FROM product WHERE brand_key='POLARAMINE'"
+    ).fetchall()
+    assert polaramine, "POLARAMINE must be findable even though it is off the main list"
+    assert polaramine[0][0] == "not_renewed"
+
+
+def test_type_keeps_bio_distinct_from_ge(tmp_path):
+    """A biosimilar is not interchangeable with a chemical generic."""
     import sqlite3
     from build_index import build
     out = tmp_path / "n.sqlite"
     build(SOURCE_XLSX, str(out))
     con = sqlite3.connect(out)
-    n = con.execute("SELECT COUNT(*) FROM product WHERE availability='withdrawn'").fetchone()[0]
-    assert n > 100
+    bio = con.execute("SELECT COUNT(*) FROM product WHERE type='BIO'").fetchone()[0]
+    assert bio > 10
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -334,16 +418,43 @@ Expected: FAIL with `ImportError: cannot import name 'build'`
 
 - [ ] **Step 3: Implement `build()`**
 
-Open with `read_only=True, data_only=True`. Read the main sheet by the name that starts with `Nomenclature` rather than by exact match. Locate the header row as the first row where at least 8 of the required header prefixes are present. Resolve every column by `find_header`. If any required column is missing, raise `BuildError` naming the missing header.
+Open with `read_only=True, data_only=True`. Read the main sheet by the name
+that starts with `Nomenclature` rather than by exact match. Locate each
+sheet's header row as the first row carrying at least 8 of the required
+header prefixes — not by hardcoding 16/12/11, since those move between
+releases. **Resolve columns separately per sheet with `find_header`**, because
+`Retraits` has a different layout: no `OBS`, no `DATE D'ENREGISTREMENT FINAL`,
+and `TYPE`/`STATUT` two positions to the left of the other two sheets. A
+prefix that resolves on one sheet returns a different index — or `None` — on
+another, which is exactly how a caller detects an absent column. If a
+required column is missing from a sheet that should have it, raise
+`BuildError` naming the sheet and the header.
 
-Read `Non Renouvelés ` and `Retraits` by prefix match too. Join them onto the main rows by `reg_no`. Availability precedence: `withdrawn` beats `not_renewed` beats `active`.
+Read all three sheets and insert every row, setting `availability` from
+**which sheet the row came from** — `active`, `not_renewed`, `withdrawn`.
+Do not join the other two sheets onto the main rows: they are disjoint, so
+that produces one row out of 9595. Capture `DATE DE RETRAIT` and
+`MOTIF DE RETRAIT` from `Retraits` into `withdrawn_at` / `withdrawn_reason`.
 
-Write `version_label` parsed from the main sheet name — `Nomenclature Aout 2026` → `Août 2026` — via a small French-to-UTF-8 month map, never from the filename. Write `built_at` as an ISO timestamp. Write the script to a temp file and `os.replace` it over the target so a crashed build cannot leave a half-written index.
+Every cell gets `.strip()`. `type` and `statut` additionally get `.upper()` —
+the file contains `'RE '`, `' RE'`, `'I '` and a lowercase `'i'`. Store `type`
+verbatim otherwise: `BIO` is its own value, and a blank stays blank rather
+than becoming `GE`.
+
+Cross-check the data row count against the number declared in each sheet's
+own title row (5425 / 1491 / 2679) and raise `BuildError` on a mismatch. It
+is the cheapest way to catch a silently-misparsed sheet.
+
+Write `version_label` parsed from the main sheet name — `Nomenclature Aout 2026`
+→ `Août 2026` — via a small French-to-UTF-8 month map, never from the
+filename. Note the sheet name carries `Aout` without the accent. Write
+`built_at` as an ISO timestamp. Write to a temp file and `os.replace` it over
+the target so a crashed build cannot leave a half-written index.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_build_index.py -v`
-Expected: 3 passed
+Expected: 4 passed
 
 - [ ] **Step 5: Build the real index and sanity-check it**
 
@@ -351,7 +462,8 @@ Expected: 3 passed
 python dz-generics/scripts/build_index.py data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx
 ```
 
-Expected output includes a row count near 5425, a `withdrawn` count near 2690, and `unparsed_doses 0`.
+Expected output: a row count near 9595, `withdrawn` near 2679,
+`not_renewed` near 1491, and `unparsed_doses 0`.
 
 - [ ] **Step 6: Commit**
 
@@ -436,11 +548,39 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'lookup'`
 
 - [ ] **Step 3: Implement `lookup.py`**
 
-Resolution order: exact `brand_key` match, then exact `dci_key` or `dci_base_key` match, then `code` match, then `difflib.get_close_matches(cutoff=0.85)` against distinct `brand_key` values. Fuzzy results become `candidates`; if the user did not disambiguate, status is `ambiguous` and the script prints candidates without picking one.
+Resolution order: exact `brand_key` match, then exact `dci_key` or
+`dci_base_key` match, then `code` match, then
+`difflib.get_close_matches(cutoff=0.85)` against distinct `brand_key` values.
+Fuzzy results become `candidates`; if the user did not disambiguate, status
+is `ambiguous` and the script prints candidates without picking one. The
+source file misspells the same substance several ways, so a miss must report
+`not_found` rather than widen the net.
 
-Pick the **anchor**: the best match for the query, preferring an exact brand hit. Group every product sharing the anchor's `dci_base_key` into three buckets by `(form_key, dose_key)`: `equivalents`, `other_dosages`, `other_forms`. Withdrawn and not-renewed records are excluded from `equivalents` by default and surfaced in a separate `inactive` list so the model can flag them without presenting them as available.
+Pick the **anchor**: the best match for the query, preferring an exact brand
+hit. Group every product sharing the anchor's `dci_base_key` into four
+buckets by `(form_key, dose_key)` and `availability`: `equivalents` (same
+form, same dose, `active`), `other_dosages`, `other_forms`, and `inactive`
+(everything whose `availability` is not `active`). `--include-inactive`
+folds `inactive` back into `equivalents` for the rare user who wants the
+full historical picture, and says so in the output.
 
-Print `version_label` on every invocation. If `built_at` is older than 90 days, print a staleness warning. Use compact aligned text by default and `--json` for structured output.
+**The anchor itself may be off-market.** `POLARAMINE` is only in the
+not-renewed list, so a lookup for it resolves fine but the anchor is not
+something you can buy. Surface the anchor's own `availability` first, and
+carry `withdrawn_reason` through for withdrawn records — "retrait par le
+détenteur pour motif commercial" is the difference between a drug that was
+unsafe and one that simply stopped selling, and the user cannot tell without
+being told.
+
+Render `statut` as *made in Algeria* (`F`) or *imported* (`I`), never as an
+availability statement, and render `type` as generic-equivalent (`GE`),
+reference product (`RE`) or biologic (`BIO`). A `BIO` row in the equivalents
+list must be visibly marked, because a biosimilar is not interchangeable with
+a chemical generic the way a `GE` is.
+
+Print `version_label` on every invocation. If `built_at` is older than 90
+days, print a staleness warning. Use compact aligned text by default and
+`--json` for structured output.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -456,7 +596,12 @@ python dz-generics/scripts/lookup.py --name "Augmentin"
 python dz-generics/scripts/lookup.py --name "Polaramine"
 ```
 
-Expected: paracetamol and amoxicillin return multiple local laboratories; Polaramine shows as a `RE` reference product with its own equivalents; a genuinely absent name exits 1 with a clear message rather than a guess.
+Expected: paracetamol and amoxicillin return multiple local laboratories;
+`POLIPRANE` shows its own rows and separates 100 mg suppositories from 500 mg
+tablets rather than merging them; `Augmentin` reports as `RE` with its
+`GE` copies alongside; `Polaramine` resolves — it is not in the main list but
+it is in the nomenclature — and leads with its not-renewed status; a genuinely
+absent name exits 1 with a clear message rather than a guess.
 
 - [ ] **Step 6: Commit**
 
