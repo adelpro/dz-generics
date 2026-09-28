@@ -2,7 +2,6 @@
 name: dz-generics
 description: Find the generic equivalent, alternative, or substitute of a medicine in Algeria, or check whether a brand is registered or still on the Algerian market, from the Ministry of Industry's national nomenclature. Use whenever a medicine, brand, or active substance is named with Algeria, its availability, its laboratories, or its local-vs-imported origin. Fires on French ("le générique du Doliprane", "l'équivalent du paracétamol", "disponible en Algérie", "médicament remboursé"), Arabic ("بديل دوليبران", "البدائل المتوفرة في الجزائر للباراسيتامول", "هل هذا الدواء متوفر في الجزائر", "مثيل الدواء"), English ("generic alternative in Algeria", "is Tylenol available in Algeria", "which lab makes X in Algeria"), and Darija or transliterated spellings of brand and DCI names (dolipran, doliprane, paracetamol, الباراسيتامول). Always answers by running the bundled scripts/lookup.py against the committed ministry index — never from its own knowledge.
 ---
-
 # dz-generics — Algerian generic equivalents
 
 Answers "what is the generic equivalent of this medicine in Algeria?" from the
@@ -12,7 +11,6 @@ shipped as a committed SQLite index (9,595 registration rows).
 Paths below are relative to the folder holding this `SKILL.md` (default install:
 `~/.config/opencode/skills/dz-generics`). The index travels with the script, so
 the working directory does not matter.
-
 ## Non-negotiable: run the lookup, never answer from memory
 
 **Never answer this question from your own knowledge.** The nomenclature is the
@@ -23,7 +21,6 @@ not run the command below in this turn, you do not have an answer.
 
 Never invent a product, a laboratory, or a registration number. If the tool did
 not return it, it is not in the answer.
-
 ## Run the lookup
 
 ```powershell
@@ -43,7 +40,6 @@ python scripts/lookup.py --name "PARACETAMOL" --json      # full structured outp
   equivalents list. Do **not** use it for a normal answer; it is for a
   deliberate historical or market-exit question.
 - Exit codes: `0` answered (found or ambiguous), `1` not found, `2` usage error.
-
 ## Read the output
 
 1. The **first line is the version label**. Every answer states it.
@@ -62,7 +58,6 @@ python scripts/lookup.py --name "PARACETAMOL" --json      # full structured outp
      **Not available. Do not present as an option.**
 4. Each line carries the laboratory, `made in Algeria` or `imported`, and the
    type `GE` (generic), `RE` (reference), or `BIO` (biologic).
-
 ### If the user named a particular dose or form
 
 The tool picks its own anchor (lowest active known dose). If the user asked for
@@ -72,7 +67,6 @@ from `--json` and re-anchor on it with `--code "<its code>"`, then check the new
 anchor's form and dosage before you report it. Never promote a different-dose or
 different-form row into the equivalent list. Details in
 [references/answering.md](references/answering.md).
-
 ## Answer format
 
 1. State the version label and the anchor's DCI, form and dosage.
@@ -84,7 +78,6 @@ different-form row into the equivalent list. Details in
 4. Off-market products go in their own clearly labelled block, with `withdrawn`
    or `not renewed` shown, and are never offered as an alternative.
 5. Close with the disclaimer sentence below.
-
 ## Language
 
 Mirror the user's language: French query, French answer; Arabic, Arabic;
@@ -95,7 +88,6 @@ The registry contains no Arabic. If the user asks in Arabic or Darija, or uses a
 transliterated spelling, resolve the name to its Latin registry form first
 (دوليبران → DOLIPRANE, الباراسيتامول → PARACETAMOL, بنادول → the substance
 PARACETAMOL), then run the tool.
-
 ## When the tool is ambiguous or misses
 
 - **ambiguous** — a near match is not a match. Present the candidates and ask
@@ -104,13 +96,11 @@ PARACETAMOL), then run the tool.
   guess. If the user named a foreign brand that is not in the registry, say so;
   you may offer to look up its substance by DCI, but never relabel another
   brand's products as "generics of X".
-
 ## Disclaimer — include in every answer, in the user's language
 
 > Equivalence here means same DCI, same form, same dose. It is not a statement
 > of bioequivalence, and substitution is the pharmacist's or prescriber's
 > decision.
-
 ## Files
 
 - [references/answering.md](references/answering.md) — worked examples (FR, AR,
