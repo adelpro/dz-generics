@@ -388,12 +388,18 @@ Then run it:
 python dz-generics/scripts/profile_source.py data/source/NOMENCLATURE.VERSION.AOUT_.2026-.xlsx
 ```
 
-Expected: **`unparsed dosages` is now expected to be a few hundred, not 22.**
-The 22 rows with no digit are the floor, not the target — every row whose
-dimension cannot be determined is correctly `None` too, and under these rules
-that is every dosage written as a bare number (`0.02`, `0.1`, `0.05`, 217
-rows) plus every multi-ingredient row. Expect roughly 240–280. A return to
-22, or a zero, means the unit is being dropped again.
+Expected: **`unparsed dosages` on the main sheet is a few hundred, not 22.**
+The 22 numberless rows are the floor, not the target — every dosage whose
+dimension cannot be determined is correctly `None` too. Verified against the
+real file, that is **416 on the main sheet** (810 across all three sheets):
+660 with no unit, 70 blank, 58 where the strength is not at the start of the
+string, 18 multi-ingredient, 4 with no number.
+
+An earlier draft of this plan said "roughly 240-280", derived from a probe
+figure of "217 rows". That figure was mislabeled: 217 was the number of
+distinct *spellings*, which cover **462 rows**. The row count is what matters
+here, so the correct expectation is 400-480. A return to 22, or a zero, means
+the unit is being dropped again.
 
 **The gate is not the count — it is the shape:**
 
