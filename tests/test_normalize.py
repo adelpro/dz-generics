@@ -272,3 +272,49 @@ def test_dci_keys_prefer_the_clause_after_exprime_en():
 def test_dci_keys_use_the_parenthesised_base_when_present():
     _, base = dci_keys("AMLODIPINE BESILATE (AMLODIPINE)")
     assert base == dci_keys("AMLODIPINE")[1]
+
+# --- combinations must not lose an active (the COVERAM bug) ----------------
+
+def test_a_combination_keeps_every_active():
+    """COVERAM and PRATIMA AM are amlodipine + perindopril. The key used to
+    keep only the first parenthetical, filing a two-drug combination as plain
+    amlodipine and grouping it with single-ingredient tablets."""
+    from normalize import dci_keys
+    _exact, base = dci_keys(
+        "AMLODIPINE BESILATE (AMLODIPINE)/PERINDOPRIL ARGININE (PERINDOPRIL)")
+    assert "AMLODIPINE" in base
+    assert "PERINDOPRIL" in base
+
+
+def test_a_combination_never_equals_one_of_its_ingredients():
+    """The safety property. If these collided, the tool would report a
+    two-drug combination as equivalent to a one-drug product."""
+    from normalize import dci_keys
+    _e, combo = dci_keys("AMLODIPINE BESILATE (AMLODIPINE)/PERINDOPRIL ARGININE (PERINDOPRIL)")
+    _e2, single = dci_keys("AMLODIPINE BESILATE EXPRIME EN AMLODIPINE")
+    assert combo != single
+    assert combo.startswith("COMBINATION")
+
+
+def test_combination_key_ignores_word_order():
+    from normalize import dci_keys
+    a = dci_keys("AMLODIPINE BESILATE (AMLODIPINE)/PERINDOPRIL ARGININE (PERINDOPRIL)")[1]
+    b = dci_keys("PERINDOPRIL ARGININE (PERINDOPRIL)/AMLODIPINE BESILATE (AMLODIPINE)")[1]
+    assert a == b
+
+
+def test_single_ingredient_keys_are_unchanged():
+    """Regression guard: the combination fix must not disturb the salt
+    grouping that the rest of the project depends on."""
+    from normalize import dci_keys
+    assert dci_keys("PARACETAMOL")[1] == "PARACETAMOL"
+    assert dci_keys("CETIRIZINE DICHLORHYDRATE")[1] == dci_keys("CETIRIZINE")[1]
+    assert dci_keys("AMLODIPINE BESILATE EXPRIME EN AMLODIPINE")[1] == "AMLODIPINE"
+
+
+def test_a_dosage_slash_is_not_a_combination():
+    """'APRPITANT 80MG / 125MG' uses the slash for a strength, not for two
+    actives. Splitting it would invent an active called 125MG."""
+    from normalize import dci_keys
+    _e, base = dci_keys("APRPITANT 80MG / 125MG")
+    assert not base.startswith("COMBINATION")

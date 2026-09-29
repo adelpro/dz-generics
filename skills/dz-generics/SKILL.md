@@ -108,6 +108,17 @@ python scripts/lookup.py --name "PARACETAMOL" --json   # full structured output
    is marked `[withdrawn]` or `[not renewed]` **wherever it appears**, in every
    section; a line with no marker is an active one. Never drop the marker when
    you reformat a line.
+5. **A sixth section may appear: "Other products under this name".** Some names
+   cover more than one medicine. NOBAC is a chewable tablet
+   (alginate/bicarbonate/**calcium carbonate**) and a suspension
+   (alginate/bicarbonate) — two different DCIs under one brand. MANTIXA carries
+   terbinafine and molsidomine, which share no ingredient at all. When this
+   section is present you **must** show it: those products are **not**
+   equivalents, and the tool is telling you the name is ambiguous. Say plainly
+   which one the answer is about, and if the user asked about a different form,
+   tell them the other product exists and how to ask for it (by its own DCI or
+   code). When the tool flags them as unrelated, say that too — it is a fact
+   about the registry, not a suggestion of equivalence.
 
 ### 4. Answer
 

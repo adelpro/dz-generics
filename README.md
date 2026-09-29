@@ -81,6 +81,35 @@ Five sections, and the difference between them is the point:
 | **Unknown dose** | same DCI and form, dose not determinable. **Not evidence of a difference.** |
 | **Other forms** | same DCI, different form. **Not equivalent.** |
 | **Off-market** | withdrawn or not renewed at the anchor's form and dose. **Not available.** |
+| **Other products under this name** | the name covers more than one medicine. **Not equivalents.** |
+
+### When one name means two medicines
+
+Some brands cover more than one product with **different active ingredients**,
+and the tool reports that rather than silently picking one:
+
+```console
+$ python skills/dz-generics/scripts/lookup.py --name "NOBAC"
+Anchor: NOBAC -- ALGINATE DE SODIUM/BICARBONATE DE SODIUM/CARBONATE DE CALCIUM
+
+EQUIVALENTS -- same DCI, same form (COMPRIME_A_CROQUER), same dose (500MG/267MG):
+   1. NOBAC -- 500MG/267MG -- GE -- made in Algeria -- BIOPHARM
+
+Other products under this name (different active ingredient set -- NOT equivalent):
+   NOBAC ADULTE GOUT FRAISE -- ALGINATE DE SODIUM/BICARBONATE DE SODIUM -- SUSPENSION BUVABLE
+   ...
+```
+
+NOBAC is a chewable tablet (alginate/bicarbonate/**calcium carbonate**) *and* a
+suspension (alginate/bicarbonate) — confirmed against the manufacturer's own
+product page and the French ANSM/HAS monograph for the same class, where
+Gaviscon's tablet carries calcium carbonate and its suspension does not.
+
+The opposite case also occurs: `MANTIXA` carries terbinafine (an antifungal
+cream) and molsidomine (a heart tablet) — **nothing in common**. The tool says
+so. That is a fact about the registry, and it is the opposite of a
+"probable equivalent" suggestion: guessing that two products under one name
+must be related is exactly how a lookup tool starts inventing medicine.
 
 Every off-market row carries `[withdrawn]` or `[not renewed]` **wherever it
 appears**; a row with no marker is active.

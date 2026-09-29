@@ -1704,6 +1704,16 @@ SALT_TOKENS = frozenset({
 
 _EXPRIME_RE = re.compile(r"\bEXPRIM\w*\s+EN\b")
 _PAREN_RE = re.compile(r"\(([^()]*)\)")
+# Marks a multi-active DCI in the base key. It cannot collide: no token in the
+# registry starts with "COMB" (verified; the earlier apparent collision was a
+# substring hit against "RECOMBINANTE", which is a different token).
+_COMB_MARKER = "COMBINATION"
+# A slash separates actives in the DCI column -- but not always. 92 of the 500
+# slash-bearing DCIs use it for a dosage ("APRPITANT 80MG / 125MG") or for a
+# multi-component biologic ("COMPOSANT 1 : FIBRINOGENE HUMAIN/..."). So a
+# component only counts as an active when it reads like one.
+_COMPONENT_DOSAGE_RE = re.compile(r"\d")
+_COMPONENT_NOT_SUBSTANCE = ("COMPOSANT", "FRACTION", "EXTRAIT", "EXTRAITS")
 _PAREN_BAD_PREFIXES = ("SOUS FORME", "OU ", "SOIT", "SEL DE")
 _PAREN_BAD_TOKENS = ("RDNA", "DCI", "HBPM")
 _PAREN_BAD_CHARS = "/,+"
@@ -1729,21 +1739,41 @@ def _paren_usable(content: str) -> bool:
     return True
 
 
-def dci_keys(dci: str | None) -> tuple[str, str]:
-    """..
+def _component_looks_like_an_active(component: str) -> bool:
+    """True when a slash-separated piece is an active substance.
 
-    The region of interest is, in order of preference, the substance stated
-    after ``EXPRIME EN`` (181 DCIs put the expressed base there), the first
-    parenthesised group that reads as a substance, or the whole string with
-    its parens stripped. The exact key sorts the region's tokens; the base key
-    additionally drops trailing salt/hydrate tokens so that
-    ``CETIRIZINE DICHLORHYDRATE`` groups with ``CETIRIZINE`` without ever
-    colliding at the exact level. Unrecognised suffixes stay in the base.
-
-    Parentheses are read from the *raw* string: ``fold`` collapses them to
-    spaces, so the paren scan has to run before folding.
+    ``/`` is normally the combination separator, but the file also uses it for
+    dosages (``APRPITANT 80MG / 125MG``) and multi-component biologics
+    (``COMPOSANT 1 : FIBRINOGENE HUMAIN (PROTEINE COAGULABLE)/...``). Treating
+    those as combinations would invent actives that do not exist, so a piece
+    has to look like a substance before it is counted: no digits, at least
+    three characters, and not an obvious structural label.
     """
-    raw = "" if dci is None else str(dci)
+    if not component:
+        return False
+    if _COMPONENT_DOSAGE_RE.search(component):
+        return False
+    if len(component) < 3:
+        return False
+    if component.startswith(_COMPONENT_NOT_SUBSTANCE):
+        return False
+    return True
+
+
+def _resolve_region(raw: str) -> str:
+    """The substance region of a single DCI *component*, before tokenising.
+
+    Order of preference: the substance stated after ``EXPRIME EN`` (181 DCIs
+    put the expressed base there), the first parenthesised group that reads as
+    a substance, else the whole component with its parens stripped.
+
+    This was the whole-DCI rule and it is only correct per component. Applied
+    to a combination it kept the first parenthetical and discarded the rest,
+    so ``AMLODIPINE BESILATE (AMLODIPINE)/PERINDOPRIL ARGININE
+    (PERINDOPRIL)`` keyed as plain ``AMLODIPINE`` and was reported as the same
+    medicine as a single-ingredient amlodipine tablet. 28 rows were affected,
+    including COVERAM, PRATIMA AM and TORVAPINE.
+    """
     folded = fold(raw)
 
     region = ""
@@ -1761,10 +1791,67 @@ def dci_keys(dci: str | None) -> tuple[str, str]:
     if not region:
         region = fold(_PAREN_RE.sub(" ", raw))
 
-    tokens = region.split()
-    exact = " ".join(sorted(tokens))
-    base_tokens = list(tokens)
-    while base_tokens and base_tokens[-1] in SALT_TOKENS:
-        base_tokens.pop()
-    base = " ".join(sorted(base_tokens))
-    return exact, base
+    return region
+
+
+def _strip_trailing_salts(tokens: list[str]) -> list[str]:
+    """Drop trailing salt/hydrate tokens from one component's tokens.
+
+    Per component, never across the join: ``PARACETAMOL/TRAMADOL
+    CHLORHYDRATE`` must lose ``CHLORHYDRATE`` from the tramadol half and leave
+    the paracetamol half alone. Popping from a joined, sorted list could take
+    a token from the wrong active.
+    """
+    out = list(tokens)
+    while out and out[-1] in SALT_TOKENS:
+        out.pop()
+    return out
+
+
+def dci_keys(dci: str | None) -> tuple[str, str]:
+    """..
+
+    A DCI may name **several actives**, separated by ``/``. Each component is
+    resolved on its own (``EXPRIME EN`` marker, then a usable parenthetical,
+    then the component itself), its salts are stripped, and the components are
+    joined order-insensitively -- the file writes one combination both as
+    ``AMLODIPINE.../PERINDOPRIL...`` and ``PERINDOPRIL.../AMLODIPINE...``.
+
+    A multi-active key carries the ``COMBINATION`` marker so it can never
+    equal the key of any of its own ingredients. That is the whole safety
+    point: without it, ``AMLODIPINE/PERINDOPRIL`` and ``AMLODIPINE`` would
+    share a class and the tool would call a two-drug combination equivalent to
+    a one-drug product.
+
+    The exact key sorts the region's tokens; the base key additionally drops
+    salt/hydrate tokens so that ``CETIRIZINE DICHLORHYDRATE`` groups with
+    ``CETIRIZINE`` without ever colliding at the exact level. Unrecognised
+    suffixes stay in the base.
+
+    Parentheses are read from the *raw* string: ``fold`` collapses them to
+    spaces, so the paren scan has to run before folding.
+    """
+    raw = "" if dci is None else str(dci)
+
+    components = [c for c in raw.split("/") if c.strip()]
+    actives = [c for c in components if _component_looks_like_an_active(fold(c))]
+
+    if len(actives) < 2:
+        # Not a combination. Resolve the whole string as one substance, which
+        # also covers the dosage-slash and multi-component-biologic cases.
+        region = _resolve_region(raw)
+        tokens = region.split()
+        exact = " ".join(sorted(tokens))
+        return exact, " ".join(sorted(_strip_trailing_salts(tokens)))
+
+    # A genuine combination: resolve and salt-strip each active separately,
+    # then join. Sorting the components makes word order irrelevant.
+    resolved = []
+    for component in actives:
+        tokens = _strip_trailing_salts(_resolve_region(component).split())
+        if tokens:
+            resolved.append(" ".join(sorted(tokens)))
+    resolved.sort()
+
+    exact = " ".join([_COMB_MARKER] + resolved)
+    return exact, exact

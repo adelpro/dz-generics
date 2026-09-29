@@ -348,7 +348,51 @@ Some use parentheses instead: `AMLODIPINE BESILATE (AMLODIPINE)`, and some
 appear both ways for the same product. Sorting tokens alphabetically (as
 `dci_keys` does) will not equate `ACIDE ZOLEDRONIQUE MONOHYDRATE` with
 `ACIDE ZOLEDRONIQUE`; the `EXPRIME EN` clause is the part that carries the
-base substance and is worth a decision in Task 2.
+base substance.
+
+### A DCI can name SEVERAL actives, and that broke the key
+
+`/` separates actives: 500 distinct DCIs use it, 349 of them with exactly two.
+The `EXPRIME EN` and parenthetical rules above are correct **per substance**,
+but they were applied to the whole DCI, so a combination kept only its first
+parenthetical:
+
+```
+AMLODIPINE BESILATE (AMLODIPINE)/PERINDOPRIL ARGININE (PERINDOPRIL)
+  -> dci_base_key = "AMLODIPINE"        <-- perindopril deleted
+```
+
+`COVERAM`, `PRATIMA AM` and `TORVAPINE` — real two-drug combinations — were
+therefore filed under `AMLODIPINE` and reported as the same medicine as a
+single-ingredient amlodipine tablet. **28 rows, latent from the first build**,
+missed by four reviews and 87 tests because every test asked about a
+one-ingredient drug.
+
+`dci_keys` now resolves each slash-separated component on its own, strips salts
+per component, and joins the results order-insensitively (the file writes one
+combination both ways round). A multi-active key carries the **`COMBINATION`**
+marker:
+
+```
+COMBINATION AMLODIPINE PERINDOPRIL
+```
+
+The marker is load-bearing, not cosmetic: without it a combination key could
+equal one of its own ingredients and the tool would call a two-drug product
+equivalent to a one-drug one. No token in the registry starts with `COMB`, so
+it cannot collide — an earlier apparent collision was a substring match against
+`RECOMBINANTE`.
+
+**A slash is not always a combination.** 92 of the 500 slash-bearing DCIs use
+it for a dosage (`APRPITANT 80MG / 125MG`) or a multi-component biologic
+(`COMPOSANT 1 : FIBRINOGENE HUMAIN (PROTEINE COAGULABLE)/...`). A piece only
+counts as an active when it looks like one — no digits, at least three
+characters, not a structural label. Splitting those would invent actives that
+do not exist.
+
+**The same substance is written with the components in either order.** Combine
+on the *sorted set of resolved components*, never on the raw string, or
+`PRATIMA AM` looks like two different products.
 
 ### Spelling variants that defeat exact matching
 

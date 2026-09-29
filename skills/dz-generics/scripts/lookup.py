@@ -175,6 +175,36 @@ class LookupResult:
         default_factory=list, repr=False)
     _inactive: list[Product] = dataclasses.field(
         default_factory=list, repr=False)
+    # Rows that share the queried *name* but not the anchor's active
+    # ingredient set. Reporting these is not an equivalence claim -- it is the
+    # opposite: NOBAC is a chewable tablet (alginate/bicarbonate/calcium
+    # carbonate) and a suspension (alginate/bicarbonate), one brand over two
+    # different medicines, and ATC is explicit that a combination gets a
+    # different code from the single-component product. Silently anchoring on
+    # one and answering "no equivalents" hides the other from the user.
+    _other_namesake_products: list[Product] = dataclasses.field(
+        default_factory=list, repr=False)
+    _namesake_unrelated: bool = False
+
+    @property
+    def other_products_under_name(self) -> list[Product]:
+        """Products carrying this name under a *different* ingredient set.
+
+        Never equivalents. Listed so a brand that covers two medicines is
+        navigable: the user can see the second one, ask about it by its own
+        DCI, and get *its* equivalence class.
+        """
+        return self._other_namesake_products
+
+    @property
+    def other_products_unrelated_to_anchor(self) -> bool:
+        """True when the namesakes share no ingredient with the anchor.
+
+        ``MANTIXA`` carries terbinafine (an antifungal cream) and molsidomine
+        (a heart tablet). That is worth stating plainly -- and it is the exact
+        opposite of a "probable equivalent" suggestion.
+        """
+        return self._namesake_unrelated
 
     @property
     def equivalents(self) -> list[Product]:
@@ -575,6 +605,87 @@ def lookup(name: str | None = None, dci: str | None = None,
         connection.close()
 
 
+def _ingredient_fingerprint(dci_base_key: str | None) -> frozenset:
+    """The set of *actives* in a base key, order-insensitive across a
+    combination.
+
+    A sorted-token set is not enough. ``PRATIMA AM`` writes one combination
+    two ways:
+
+        AMLODIPINE BESILATE (AMLODIPINE)/PERINDOPRIL ARGININE (PERINDOPRIL)
+        PERINDOPRIL ARGININE (PERINDOPRIL)/AMLODIPINE BESILATE (AMLODIPINE)
+
+    Sorted tokens of the whole string differ between those, so the brand
+    looked self-divergent. Sorting *within each slash-separated component* and
+    then sorting the components makes both spellings one fingerprint.
+    """
+    if not dci_base_key:
+        return frozenset()
+    parts = []
+    for component in dci_base_key.split("/"):
+        parts.append(" ".join(sorted(component.split())))
+    return frozenset(parts)
+
+
+def _sibling_namesake_products(connection, anchor: Product,
+                              matched: list[Product]) -> tuple[list[Product], bool]:
+    """Rows that share the queried name but a different ingredient set.
+
+    Two shapes, and both matter:
+
+    - **Same brand, two ingredients.** ``MANTIXA`` is one ``brand_key``
+      carrying both molsidomine (heart tablet) and terbinafine (antifungal
+      cream). Nothing in common. A data-quality fact, and the opposite of a
+      generic suggestion.
+    - **A brand family.** ``NOBAC`` (alginate/bicarbonate/calcium carbonate,
+      chewable) vs ``NOBAC ADULTE GOUT FRAISE`` (alginate/bicarbonate,
+      suspension). Different brand_keys, so they never reach this anchor
+      through the brand route at all, and the user is never told the second
+      exists.
+
+    Compared on the **token set**, not the stored key string, because
+    ``PRATIMA AM`` writes one combination two ways -- ``AMLODIPINE…/PERINDOPRIL…``
+    and ``PERINDOPRIL…/AMLODIPINE…`` -- giving different key strings for
+    identical ingredients. String comparison flagged that brand as
+    self-divergent.
+
+    Returns ``(rows, unrelated)``; ``unrelated`` is True when no namesake
+    shares any ingredient token with the anchor.
+    """
+    if not anchor.brand_key:
+        return [], False
+    anchor_tokens = _ingredient_fingerprint(anchor.dci_base_key)
+
+    # (a) The brand route already returns every row of the brand, so a brand
+    #     whose rows span two ingredients shows up right here (MANTIXA).
+    siblings = [p for p in matched
+                if _ingredient_fingerprint(p.dci_base_key) != anchor_tokens
+                and p.id != anchor.id]
+
+    # (b) A *family* is not in `matched` at all: NOBAC and NOBAC ADULTE GOUT
+    #     FRAISE are separate brand_keys, so the second never reaches this
+    #     anchor and the user is never told it exists.
+    family = [row[0] for row in connection.execute(
+        "SELECT DISTINCT brand_key FROM product "
+        "WHERE brand_key LIKE ? ESCAPE '\\' ORDER BY brand_key LIMIT ?",
+        (anchor.brand_key.replace("\\", "\\\\").replace("%", "\\%")
+         .replace("_", "\\_") + " %", MAX_CANDIDATES))]
+    for brand in family:
+        for row in connection.execute(
+                "SELECT * FROM product WHERE brand_key=? "
+                "ORDER BY dci_base_key, form_key", (brand,)):
+            product = Product.from_row(row)
+            if _ingredient_fingerprint(product.dci_base_key) != anchor_tokens:
+                siblings.append(product)
+
+    if not siblings:
+        return [], False
+    unrelated = all(
+        not (set((p.dci_base_key or "").split()) & set((anchor.dci_base_key or "").split()))
+        for p in siblings)
+    return siblings, unrelated
+
+
 def _finish(connection, query: str, meta: dict, anchor: Product,
             anchor_rule: str, include_inactive: bool,
             matched: list[Product] | None = None) -> LookupResult:
@@ -606,6 +717,8 @@ def _finish(connection, query: str, meta: dict, anchor: Product,
         anchor_rows=_anchor_rows(anchor, matched) if matched else [anchor])
     (result._equivalents, result._other_dosages, result._unknown_dose,
      result._other_forms, result._inactive) = buckets
+    result._other_namesake_products, result._namesake_unrelated = (
+        _sibling_namesake_products(connection, anchor, matched or [anchor]))
     return result
 
 

@@ -829,3 +829,59 @@ def test_a_near_match_is_never_auto_picked_even_when_unique():
     assert res.status == "ambiguous"
     assert res.anchor is None
     assert {p.brand_key for p in res.candidates} >= {"DOLIPRANE"}
+
+# --- multi-DCI brands: report the divergence, never merge it ----------------
+
+def test_a_brand_spanning_several_dcis_reports_the_other_products():
+    """NOBAC is a chewable tablet (alginate/bicarbonate/CALCIUM CARBONATE) and
+    a suspension (alginate/bicarbonate). One brand, two different medicines.
+    The answer must name both rather than silently pick one and say 'none'."""
+    from lookup import lookup
+    res = lookup(name="NOBAC")
+    assert res.status == "found"
+    assert res.other_products_under_name, "NOBAC must report its second DCI"
+    # The anchor is the 3-ingredient tablet; every namesake is the
+    # 2-ingredient suspension. Compare ACTIVE counts, not substrings --
+    # 'BICARBONATE' contains 'CARBONATE' and makes substring tests lie.
+    assert res.anchor.dci_base_key.count("DE") >= 3
+    for p in res.other_products_under_name:
+        assert p.dci_base_key != res.anchor.dci_base_key
+        assert p.form_key.startswith("SUSPENSION")
+
+
+def test_the_other_products_are_never_presented_as_equivalents():
+    """The whole point: reporting the divergence must not become a claim that
+    a tablet equals a suspension."""
+    from lookup import lookup
+    res = lookup(name="NOBAC")
+    shown = {p.brand_key for p in res.equivalents}
+    assert shown == {"NOBAC"}
+    assert all(p.dci_base_key != res.anchor.dci_base_key
+               for p in res.other_products_under_name)
+
+
+def test_a_normal_brand_reports_no_divergence():
+    from lookup import lookup
+    res = lookup(name="DOLIPRANE")
+    assert res.other_products_under_name == []
+
+
+def test_unrelated_products_under_one_name_are_flagged_as_unrelated():
+    """MANTIXA carries terbinafine (an antifungal cream) and molsidomine (a
+    heart tablet). Those share no ingredient at all. That is a data-quality
+    fact worth stating, and it is the opposite of a generic suggestion."""
+    from lookup import lookup
+    res = lookup(name="MANTIXA")
+    assert res.status == "found"
+    assert len(res.other_products_under_name) >= 1
+    assert res.other_products_unrelated_to_anchor is True
+
+
+def test_combination_word_order_is_not_a_divergence():
+    """PRATIMA AM writes one combination two ways (amlodipine/perindopril and
+    perindopril/amlodipine). Same ingredients, so there is nothing to warn
+    about -- an earlier detector compared sorted key strings and split these."""
+    from lookup import lookup
+    res = lookup(name="PRATIMA AM")
+    assert res.status == "found"
+    assert res.other_products_under_name == []
