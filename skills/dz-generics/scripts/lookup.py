@@ -54,8 +54,12 @@ from normalize import fold
 # any working directory. Never opened read-write.
 DB_FILENAME = os.path.join("..", "data", "nomenclature.sqlite")
 
-# Above this ratio a brand is *shown to the user*, never chosen for them.
+# Above this ratio a brand or DCI is *shown to the user*, never chosen for them.
 FUZZY_CUTOFF = 0.85
+# A DCI may resolve on a single fuzzy neighbour, but only when nothing else is
+# anywhere near it -- see _dci_neighbours. Kept below FUZZY_CUTOFF so the rival
+# scan is strictly wider than the shortlist it guards.
+FUZZY_CANDIDATE_FLOOR = 0.62
 # Enough to disambiguate a typo without turning the answer into a list.
 MAX_CANDIDATES = 5
 
@@ -316,9 +320,11 @@ def _resolve_exact(connection, name=None, dci=None, code=None):
 
 
 def _fuzzy_candidates(connection, typed: str) -> list[Product]:
-    """Brands close to ``typed``, for the user to choose between. Never an
-    anchor. ``get_close_matches`` returns at most one row per brand, so the
-    rows are fetched back explicitly."""
+    """Pure difflib neighbours of ``typed``. Never an anchor.
+
+    Also returns the ratio for each, because the prefix route below appends to
+    this list and the result has to stay ordered by confidence.
+    """
     brands = [row[0] for row in connection.execute(
         "SELECT DISTINCT brand_key FROM product")]
     close = difflib.get_close_matches(
@@ -327,6 +333,84 @@ def _fuzzy_candidates(connection, typed: str) -> list[Product]:
     for brand_key in close:
         candidates.extend(_rows_for_brand(connection, brand_key))
     return candidates
+
+
+def _prefix_family(connection, typed: str) -> list[str]:
+    """Brands that *extend* ``typed`` as whole leading tokens.
+
+    ``RIFEX`` matches ``RIFEX 120`` and ``RIFEX 180``; ``NOBAC ADULTE``
+    matches ``NOBAC ADULTE GOUT FRAISE``. This exists because 1,606 brands in
+    the registry appear only with a suffix -- usually the strength or the
+    audience -- so a user typing the bare family name got ``not_found`` for a
+    drug that is plainly registered. Measured: 1,025 such names were reported
+    absent.
+
+    Whole tokens only, so ``RIF`` does not drag in ``RIFADIN``; and a match
+    here is a *candidate*, never an anchor, because the user typed something
+    the registry does not have verbatim.
+    """
+    stem = fold(typed)
+    if len(stem) < 4:
+        return []
+    return [row[0] for row in connection.execute(
+        "SELECT DISTINCT brand_key FROM product "
+        "WHERE brand_key LIKE ? ESCAPE '\\' ORDER BY brand_key LIMIT ?",
+        (stem.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + " %",
+         MAX_CANDIDATES))]
+
+
+def _dci_neighbours(connection, typed: str) -> tuple[list[str], list[str]]:
+    """Fuzzy and prefix neighbours of a DCI the user typed.
+
+    Returns ``(shortlist, exactish)``. ``shortlist`` is what goes to the user
+    as candidates. ``exactish`` is the subset close enough to *resolve* on
+    below the display cutoff, and it is deliberately a narrower set.
+
+    Why this exists: fuzzy matching used to run against brand names only, so
+    ``PARACETAMOLE`` -- 0.957 similar to the registry's ``PARACETAMOL`` --
+    came back as "not in the nomenclature". Same for the English spellings
+    (``IBUPROFEN`` vs ``IBUPROFENE``).
+
+    Resolution still needs a margin: ``METFORMIN`` is 0.875 similar to
+    ``METFORMINE``, but ``NORFLOXACIN`` sits 0.800 from ``NORFLOXAL`` and
+    ``IBUPROFEN`` 0.800 from ``PROFEN``, which are different substances.
+    So a single neighbour resolves only when it is unambiguous and no rival
+    brand or DCI is close to it either.
+    """
+    keys = [row[0] for row in connection.execute(
+        "SELECT DISTINCT dci_key FROM product WHERE dci_key <> ''")]
+    stem = fold(typed)
+    close = difflib.get_close_matches(
+        stem, keys, n=MAX_CANDIDATES, cutoff=FUZZY_CUTOFF)
+    # A shortlist is for display, so the typed string leads it even when no
+    # stored key is spelled that way.
+    shortlist = close if stem in close else [stem] + close
+    shortlist = shortlist[:MAX_CANDIDATES]
+
+    # Resolution needs exactly one real neighbour. `close` holds only stored
+    # keys, so this is a genuine count -- an earlier version inserted the typed
+    # string into the list it counted, which made this branch unreachable.
+    if len(close) != 1:
+        return shortlist, []
+
+    winner = close[0]
+    # Does anything else come within five points of the winner? Compare the
+    # *ratios* rather than the match list: get_close_matches fills to n, so a
+    # rival scan built from it always returns the winner plus the next key
+    # down (PROPARACETAMOL at 0.846 would veto PARACETAMOLE at 0.957).
+    winner_ratio = difflib.SequenceMatcher(None, stem, winner).ratio()
+    for key in keys:
+        if key == winner:
+            continue
+        if difflib.SequenceMatcher(None, stem, key).ratio() >= winner_ratio - 0.05:
+            return shortlist, []
+    return shortlist, [winner]
+
+
+def _rows_for_dci(connection, key: str) -> list[Product]:
+    return [Product.from_row(r) for r in connection.execute(
+        "SELECT * FROM product WHERE dci_key=? OR dci_base_key=? "
+        "ORDER BY brand_key", (key, key))]
 
 
 def _anchor_sort_key(product: Product):
@@ -438,8 +522,38 @@ def lookup(name: str | None = None, dci: str | None = None,
         matched, _route = _resolve_exact(connection, name, dci, code)
 
         if not matched and name:
-            # Fuzzy is a *display* route, never a resolution route.
+            # Two display routes, and neither ever produces an anchor: pure
+            # edit-distance neighbours, then brands that extend the typed name
+            # as whole tokens (RIFEX -> RIFEX 120 / RIFEX 180). The prefix route
+            # is what rescues the 1,606 registry brands that exist only with a
+            # suffix; without it a bare family name was reported "not in the
+            # nomenclature".
             candidates = _fuzzy_candidates(connection, name)
+            seen = {p.brand_key for p in candidates}
+            for brand_key in _prefix_family(connection, name):
+                if brand_key not in seen:
+                    candidates.extend(_rows_for_brand(connection, brand_key))
+                    seen.add(brand_key)
+            return LookupResult(
+                query=query, status="ambiguous" if candidates else "not_found",
+                candidates=candidates,
+                version_label=meta.get("version_label", ""),
+                built_at=meta.get("built_at", ""),
+                include_inactive=include_inactive)
+
+        if not matched and dci:
+            # A misspelled or English DCI still resolves when it is the only
+            # thing nearby; otherwise the neighbours go to the user.
+            shortlist, exactish = _dci_neighbours(connection, dci)
+            if len(exactish) == 1:
+                anchor, anchor_rule = _pick_anchor(
+                    _rows_for_dci(connection, exactish[0]))
+                return _finish(
+                    connection, query, meta, anchor,
+                    "dci_near_match:" + anchor_rule, include_inactive)
+            candidates = []
+            for key in shortlist:
+                candidates.extend(_rows_for_dci(connection, key))
             return LookupResult(
                 query=query, status="ambiguous" if candidates else "not_found",
                 candidates=candidates,
@@ -455,31 +569,44 @@ def lookup(name: str | None = None, dci: str | None = None,
                 include_inactive=include_inactive)
 
         anchor, anchor_rule = _pick_anchor(matched)
-        # A third of the DCI gradings are not clean: 3 rows carry an EMPTY
-        # `dci_base_key` ('CARONATE DE MAGNESIUM...', 'MAGNESIUM SULFATE',
-        # 'METOCLOPRAMIDE...'), and 194 brands span more than one base key.
-        # Grouping on an empty key would marry three unrelated molecules into
-        # one equivalence class, so an unknown base key defines no class: the
-        # anchor stands alone and the class is empty.
-        group = []
-        if anchor.dci_base_key:
-            group = [Product.from_row(r) for r in connection.execute(
-                "SELECT * FROM product WHERE dci_base_key=?",
-                (anchor.dci_base_key,))]
-        buckets = _bucket(anchor, group, include_inactive)
-
-        result = LookupResult(
-            query=query, status="found", dci_base_key=anchor.dci_base_key,
-            anchor=anchor, version_label=meta.get("version_label", ""),
-            built_at=meta.get("built_at", ""),
-            include_inactive=include_inactive, anchor_rule=anchor_rule,
-            matched_rows=sorted(matched, key=_sort_key),
-            anchor_rows=_anchor_rows(anchor, matched))
-        (result._equivalents, result._other_dosages, result._unknown_dose,
-         result._other_forms, result._inactive) = buckets
-        return result
+        return _finish(connection, query, meta, anchor, anchor_rule,
+                       include_inactive, matched=matched)
     finally:
         connection.close()
+
+
+def _finish(connection, query: str, meta: dict, anchor: Product,
+            anchor_rule: str, include_inactive: bool,
+            matched: list[Product] | None = None) -> LookupResult:
+    """Bucket the anchor's equivalence class and assemble the result.
+
+    Shared by the exact routes and the DCI near-match route so that both go
+    through the same bucketing -- a near-matched DCI must produce exactly the
+    class an exact match would have.
+
+    A third of the DCI gradings are not clean: 3 rows carry an EMPTY
+    ``dci_base_key`` ('CARONATE DE MAGNESIUM...', 'MAGNESIUM SULFATE',
+    'METOCLOPRAMIDE...'), and 194 brands span more than one base key. Grouping
+    on an empty key would marry three unrelated molecules into one equivalence
+    class, so an unknown base key defines no class: the anchor stands alone.
+    """
+    group = []
+    if anchor.dci_base_key:
+        group = [Product.from_row(r) for r in connection.execute(
+            "SELECT * FROM product WHERE dci_base_key=?",
+            (anchor.dci_base_key,))]
+    buckets = _bucket(anchor, group, include_inactive)
+
+    result = LookupResult(
+        query=query, status="found", dci_base_key=anchor.dci_base_key,
+        anchor=anchor, version_label=meta.get("version_label", ""),
+        built_at=meta.get("built_at", ""),
+        include_inactive=include_inactive, anchor_rule=anchor_rule,
+        matched_rows=sorted(matched, key=_sort_key) if matched else [],
+        anchor_rows=_anchor_rows(anchor, matched) if matched else [anchor])
+    (result._equivalents, result._other_dosages, result._unknown_dose,
+     result._other_forms, result._inactive) = buckets
+    return result
 
 
 # ---------------------------------------------------------------------------

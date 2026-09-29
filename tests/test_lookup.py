@@ -758,3 +758,74 @@ def test_the_index_read_only_uri_is_actually_used():
         assert con.execute("SELECT COUNT(*) FROM product").fetchone()[0] == 9595
     finally:
         con.close()
+
+# --- near-miss resolution: the RIFEX / PARACETAMOLE class ------------------
+
+def test_typo_on_a_dci_finds_the_dci_not_a_miss():
+    """PARACETAMOLE is 0.957 similar to PARACETAMOL -- the most common drug in
+    the country. It used to be an outright not_found because fuzzy only ever
+    ran against brand names."""
+    from lookup import lookup
+    res = lookup(dci="PARACETAMOLE")
+    assert res.status == "found"
+    assert res.anchor is not None
+    assert res.anchor.dci_base_key == "PARACETAMOL"
+
+
+def test_english_dci_spelling_resolves():
+    """The English spelling resolves when the match is unambiguous."""
+    from lookup import lookup
+    res = lookup(dci="IBUPROFEN")
+    assert res.status == "found"
+    assert res.anchor.dci_base_key == "IBUPROFENE"
+
+
+def test_english_dci_spelling_asks_when_a_rival_is_close():
+    """NORFLOXACIN is 0.957 from NORFLOXACINE, but OFLOXACINE -- a different
+    antibiotic -- is only 0.10 behind it. That is a real ambiguity, so the
+    tool lists both instead of resolving to the wrong antibiotic."""
+    from lookup import lookup
+    res = lookup(dci="NORFLOXACIN")
+    assert res.status == "ambiguous"
+    assert res.anchor is None
+    assert {p.dci_key for p in res.candidates} >= {"NORFLOXACINE", "OFLOXACINE"}
+
+
+def test_bare_family_name_lists_the_suffixed_forms():
+    """RIFEX exists only as RIFEX 120 / RIFEX 180 in the registry. The bare
+    name must offer those rather than claim the drug is absent."""
+    from lookup import lookup
+    res = lookup(name="RIFEX")
+    assert res.status == "ambiguous"
+    brands = {p.brand_key for p in res.candidates}
+    assert brands == {"RIFEX 120", "RIFEX 180"}
+    assert res.anchor is None, "a near match must never become the anchor"
+
+
+def test_bare_family_name_works_for_other_stems():
+    from lookup import lookup
+    for bare, expect in [("ACTRAPID", "ACTRAPID HM"),
+                         ("ADEX", "ADEX LP"),
+                         ("NOBAC ADULTE", "NOBAC ADULTE GOUT FRAISE")]:
+        res = lookup(name=bare)
+        assert res.status == "ambiguous", f"{bare} -> {res.status}"
+        assert expect in {p.brand_key for p in res.candidates}
+
+
+def test_an_invented_name_still_finds_nothing():
+    """The classes above must not turn every miss into a candidate list.
+    RAFEX and NIBAC are one edit from nothing in the registry."""
+    from lookup import lookup
+    for junk in ("ZZZZNOTADRUG", "KDJHFG", "XQZT", "TOTALLYFAKE123"):
+        res = lookup(name=junk)
+        assert res.status == "not_found", f"{junk} -> {res.status}"
+        assert res.candidates == []
+
+
+def test_a_near_match_is_never_auto_picked_even_when_unique():
+    """The whole safety contract: one candidate is still a candidate."""
+    from lookup import lookup
+    res = lookup(name="dolipran")          # 0.941, unique
+    assert res.status == "ambiguous"
+    assert res.anchor is None
+    assert {p.brand_key for p in res.candidates} >= {"DOLIPRANE"}

@@ -370,6 +370,66 @@ This is the argument for grouping on salt-insensitive keys and for never
 promising a fuzzy match as a fact. It is also why an exact-match lookup must
 say "not found" rather than guess.
 
+### Salt and hydrate suffixes: what is stripped, what is kept, and why
+
+`dci_base_key` reduces a DCI to its **active moiety** by dropping salt and
+hydrate suffixes. That is a deliberate decision with a regulatory basis and a
+known limit, and a future maintainer should not "fix" it without reading this.
+
+**The authorities disagree by axis, so the rule is per-axis:**
+
+| suffix class | examples | stripped? | basis |
+|---|---|---|---|
+| hydrate / polymorph | `ANHYDRE`, `MONOHYDRATE`, `DIHYDRATE`, `HEMIHYDRATE`, `TRIHYDRATE` | **yes** | FDA (Orange Book): "Anhydrous and hydrated entities, as well as different polymorphs, are considered to be the same active ingredient." |
+| salt / ester | `DICHLORHYDRATE`, `CHLORHYDRATE`, `MALEATE`, `BESYLATE`, `SULFATE`, `CITRATE`, `SODIQUE`, `POTASSIQUE`, `CALCIUM`, `MAGNESIUM` | **yes, here** | see below — a deliberate divergence from the letter of the FDA rule |
+
+**The FDA says a different salt IS a different active ingredient:**
+
+> "Different salts, esters or other noncovalent derivatives … of the same
+> active moiety are regarded as different active ingredients … considered
+> pharmaceutical alternatives and, thus, not therapeutically equivalent."
+
+**We strip them anyway, for two reasons, and both are checkable:**
+
+1. *The registry normalises salts itself.* 181 DCI values carry an
+   `EXPRIME EN <base>` clause (`AMLODIPINE BESILATE EXPRIME EN AMLODIPINE`),
+   which is the ministry stating the salt is expressed as the base. Stripping
+   elsewhere is consistent with the ministry's own convention, not contrary
+   to it.
+2. *Splitting would wreck the answers.* The FDA rule governs **therapeutic
+   equivalence claims** — substituting a besylate for a maleate. This tool
+   makes no such claim: every answer closes by saying equivalence here means
+   same DCI, same form, same dose, and that bioequivalence is not asserted and
+   substitution is the pharmacist's decision. Splitting on salt would move
+   `CETIRIZINE` from 33 grouped products to 2, and would separate
+   `ESOMEPRAZOLE` from `ESOMEPRAZOLE MAGNESIUM`, a distinction no clinician
+   acts on.
+
+**Measured, so nobody re-derives it:**
+
+- 97 base keys are reached from more than one exact DCI spelling.
+- In **28** of those, the spellings co-occur under a *single brand* — the
+  registry plainly means one substance (`AMIOCARDONE` carries both
+  `AMIODARONE` and `AMIODARONE CHLORHYDRATE`). Merging is unambiguously right
+  there.
+- In **69**, the spellings sit under different brands (`CETIRIZINE` vs
+  `CETIRIZINE DICHLORHYDRATE`; `DICLOFENAC` / `SODIQUE` / `POTASSIQUE`). These
+  are the debatable ones, and they are merged on purpose.
+
+**The mitigation is presentation, not grouping.** Every rendered row carries
+its raw DCI string, so a salt difference is always *visible* even when the rows
+share a class. If a future release ever needs the strict reading, the change is
+to stop stripping the salt vocabulary and rebuild — but expect it to shatter
+most classes in the file, because 41% of rows carry a salt token.
+
+**Do not strip a token that is not in the vocabulary**, and never bundle a
+*combination* into a base: `PARACETAMOL/TRAMADOL CHLORHYDRATE` is two actives,
+and ATC is explicit that "products containing two or more active ingredients
+are regarded as combinations and given different ATC codes from the product
+with a single component". The ingredient-count difference is the one merge
+that is always wrong — it is the NOBAC case (`ALGINATE/BICARBONATE` vs
+`ALGINATE/BICARBONATE/CARBONATE DE CALCIUM`), and it must never be collapsed.
+
 ---
 
 ## DOSAGE — 1178 distinct values, 19 blank
